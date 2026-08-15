@@ -495,6 +495,10 @@ enum JorenIronstockData
     // Time between the shot leaving the barrel and the invader dropping
     SHOT_TRAVEL_TIME               = 1,
 
+    // He sights the shot for a beat once an invader is in range instead of snapping to it
+    AIM_TIME_MIN                   = 1,
+    AIM_TIME_MAX                   = 2,
+
     // Roughly how many melee swings an invader should survive. Raise it to make his
     // melee weaker, lower it to make him hit harder.
     MELEE_SWINGS_TO_KILL           = 4
@@ -562,6 +566,14 @@ struct npc_joren_ironstock : public ScriptedAI
         // Defenders cannot farm them out from under the players. His own are his to kill,
         // by rifle or by hand.
         summon->SetSparringHealthLimit(0.0f);
+
+        // Anchor their leash on Joren rather than on the spot they spawned at. A creature
+        // gives up when its victim is further than ThreatRadius from its own home position
+        // (Creature::CanCreatureAttack), and the outer spawn points are 60-73 yards out -
+        // past the default 60 - so those invaders used to break off mid-charge and walk
+        // back to their spawn. Their home is wherever Joren is standing; the charge is the
+        // whole point of them.
+        summon->SetHomePosition(me->GetPosition());
     }
 
     void SummonedCreatureDespawn(Creature* summon) override
@@ -590,6 +602,14 @@ struct npc_joren_ironstock : public ScriptedAI
             EnqueueInvader(invader, Seconds(5), Seconds(8));
 
         invader->AI()->AttackStart(me);
+
+        // Put him on Joren's threat list straight away, at zero threat. AttackStart alone
+        // only makes the invader attack - it lands no threat until it actually connects,
+        // and an invader still running in from an outer spawn point has not connected yet.
+        // Without this, killing the invader he is currently shooting empties his threat
+        // list, Creature::SelectVictim finds nothing and evades him, and CombatStop drops
+        // every other invader's aggro - so the ones still charging turn around and go home.
+        me->AddThreat(invader, 0.0f);
     }
 
     // Mirrors what Spell::GetMinMaxRange works out for the shot, so the queue only offers
@@ -604,11 +624,43 @@ struct npc_joren_ironstock : public ScriptedAI
         return me->GetExactDist(invader) <= maxRange;
     }
 
+    void FireAt(ObjectGuid guid, TaskContext& task)
+    {
+        Creature* invader = ObjectAccessor::GetCreature(*me, guid);
+        if (!invader || !invader->IsAlive())
+            return;
+
+        // Don't snipe a kill out from under a player - wait until they are done with it
+        if (invader->GetVictim() && invader->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+        {
+            _invadersToShoot.push(guid);
+            return;
+        }
+
+        // Moved back out of range or behind cover while he was lining it up
+        if (!IsInShootingRange(invader) || !me->CastSpell(invader, SPELL_SHOOT, false))
+        {
+            _invadersToShoot.push(guid);
+            return;
+        }
+
+        if (roll_chance_i(50))
+            Talk(SAY_SHOOT_ROCKJAW, invader);
+
+        // One shot, one invader. Wait for the bullet to land before dropping him.
+        task.Schedule(Seconds(SHOT_TRAVEL_TIME), [this, guid](TaskContext /*killTask*/)
+        {
+            Creature* target = ObjectAccessor::GetCreature(*me, guid);
+            if (target && target->IsAlive())
+                me->Kill(target);
+        });
+    }
+
     void ShootNextInvader(TaskContext& task)
     {
         // Take the first invader that has closed to within rifle range. The ones still
-        // running in keep their place in the queue and get shot the moment they arrive,
-        // instead of wasting this tick on a target he cannot reach yet.
+        // running in keep their place in the queue, instead of wasting this tick on a
+        // target he cannot reach yet.
         for (size_t remaining = _invadersToShoot.size(); remaining > 0; --remaining)
         {
             ObjectGuid guid = _invadersToShoot.front();
@@ -618,35 +670,17 @@ struct npc_joren_ironstock : public ScriptedAI
             if (!invader || !invader->IsAlive())
                 continue; // gone for good, drop it from the queue
 
-            // Don't snipe a kill out from under a player - wait until they are done with it
-            if (invader->GetVictim() && invader->GetVictim()->GetTypeId() == TYPEID_PLAYER)
-            {
-                _invadersToShoot.push(guid);
-                continue;
-            }
-
             if (!IsInShootingRange(invader))
             {
                 _invadersToShoot.push(guid);
                 continue;
             }
 
-            if (!me->CastSpell(invader, SPELL_SHOOT, false))
+            // He takes a beat to sight the shot rather than firing the instant they cross
+            // into range.
+            task.Schedule(Seconds(AIM_TIME_MIN), Seconds(AIM_TIME_MAX), [this, guid](TaskContext shot)
             {
-                // No line of sight yet, try again later
-                _invadersToShoot.push(guid);
-                continue;
-            }
-
-            if (roll_chance_i(50))
-                Talk(SAY_SHOOT_ROCKJAW, invader);
-
-            // One shot, one invader. Wait for the bullet to land before dropping him.
-            task.Schedule(Seconds(SHOT_TRAVEL_TIME), [this, guid](TaskContext /*killTask*/)
-            {
-                Creature* target = ObjectAccessor::GetCreature(*me, guid);
-                if (target && target->IsAlive())
-                    me->Kill(target);
+                FireAt(guid, shot);
             });
 
             return;

@@ -198,7 +198,8 @@ m_respawnDelay(300), m_corpseDelay(60), m_wanderDistance(0.0f), m_boundaryCheckT
 m_defaultMovementType(IDLE_MOTION_TYPE), m_spawnId(UI64LIT(0)), m_equipmentId(0), m_originalEquipmentId(0), m_AlreadyCallAssistance(false),
 m_AlreadySearchedAssistance(false), m_regenHealth(true), m_cannotReachTarget(false), m_cannotReachTimer(0), m_AI_locked(false), m_meleeDamageSchoolMask(SPELL_SCHOOL_MASK_NORMAL),
 m_originalEntry(0), m_homePosition(), m_transportHomePosition(), m_creatureInfo(nullptr), m_creatureData(nullptr), m_waypointID(0), m_path_id(0), m_formation(nullptr),
-m_focusSpell(nullptr), m_focusDelay(0), m_shouldReacquireTarget(false), m_suppressedOrientation(0.0f), m_wildBattlePet(nullptr), m_disableHealthRegen(false)
+m_focusSpell(nullptr), m_focusDelay(0), m_shouldReacquireTarget(false), m_suppressedOrientation(0.0f), m_wildBattlePet(nullptr), m_disableHealthRegen(false),
+m_sparringHealthLimitOverride(-1.0f)
 {
     m_regenTimer = CREATURE_REGEN_INTERVAL;
     m_valuesCount = UNIT_END;
@@ -1880,6 +1881,9 @@ void Creature::Respawn(bool force)
 {
     DestroyForNearbyPlayers();
 
+    // A respawned spawn is a fresh creature, it must not inherit a script's sparring override
+    ClearSparringHealthLimitOverride();
+
     if (force)
     {
         if (IsAlive())
@@ -3242,6 +3246,9 @@ void Creature::ReLoad(bool skipDB)
 
 float Creature::GetSparringHealthLimit() const
 {
+    if (m_sparringHealthLimitOverride >= 0.0f)
+        return m_sparringHealthLimitOverride;
+
     return sObjectMgr->GetSparringHealthLimitFor(GetEntry());
 }
 

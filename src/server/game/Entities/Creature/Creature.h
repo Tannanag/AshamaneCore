@@ -182,6 +182,10 @@ class TC_GAME_API Creature : public Unit, public GridObject<Creature>, public Ma
         CreatureAddon const* GetCreatureAddon() const;
 
         float GetSparringHealthLimit() const;
+        // Per-creature override of creature_sparring_template, for scripts that need a
+        // single spawn of a sparring entry to be killable. 0 disables sparring for it.
+        void SetSparringHealthLimit(float healthLimitPct) { m_sparringHealthLimitOverride = healthLimitPct; }
+        void ClearSparringHealthLimitOverride() { m_sparringHealthLimitOverride = -1.0f; }
 
         std::string GetAIName() const;
         std::string GetScriptName() const;
@@ -438,6 +442,9 @@ class TC_GAME_API Creature : public Unit, public GridObject<Creature>, public Ma
         WildBattlePet* m_wildBattlePet;
 
         bool m_disableHealthRegen;
+
+        // Negative means "no override", fall back to creature_sparring_template
+        float m_sparringHealthLimitOverride;
 };
 
 class TC_GAME_API AssistDelayEvent : public BasicEvent

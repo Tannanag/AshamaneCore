@@ -27,7 +27,9 @@
 #include "SpellInfo.h"
 #include "SpellScript.h"
 #include "TemporarySummon.h"
+#include "ThreatManager.h"
 #include <queue>
+#include <unordered_set>
 
 enum WoundedColdridgeMountaineer
 {
@@ -486,20 +488,136 @@ enum JorenIronstockData
     // Shoot this core already uses for the Coldridge Defender riflemen (37177).
     SPELL_SHOOT                    = 6660,
 
-    INVADER_DESPAWN_TIME           = 18 * IN_MILLISECONDS
+    INVADER_DESPAWN_TIME           = 18 * IN_MILLISECONDS,
+
+    // Time between the shot leaving the barrel and the invader dropping
+    SHOT_TRAVEL_TIME               = 1
 };
 
 // 37081 - Joren Ironstock
+//
+// He holds the pass and never leaves it: the invaders he summons run to him, he guns them
+// down from where he stands. Only his own summons are part of the vignette - the static
+// Rockjaw Invader spawns nearby are the players' business, not his, and if anything that
+// is not one of his summons picks a fight with him the vignette pauses until he is clear.
 struct npc_joren_ironstock : public ScriptedAI
 {
     npc_joren_ironstock(Creature* creature) : ScriptedAI(creature) { }
 
-    void EnqueueInvader(Unit* invader, Seconds minTime = Seconds(1), Seconds maxTime = Seconds(9))
+    bool IsVignetteInvader(Unit const* who) const
+    {
+        return who && _invaders.find(who->GetGUID()) != _invaders.end();
+    }
+
+    // The static Rockjaw Invaders in the valley are the players' quest mobs, not his fight -
+    // SelectVictim() must never hand him one. Anything else that picks a fight with him
+    // still gets one; the spawner just holds off until it is over.
+    bool CanAIAttack(Unit const* who) const override
+    {
+        if (who && who->GetEntry() == NPC_ROCKJAW_INVADER)
+            return IsVignetteInvader(who);
+
+        return true;
+    }
+
+    // True while something outside the vignette holds threat on him.
+    bool IsFightingOutsider() const
+    {
+        if (!me->IsInCombat())
+            return false;
+
+        for (HostileReference const* ref : me->getThreatManager().getThreatList())
+            if (!IsVignetteInvader(ref->getTarget()))
+                return true;
+
+        return false;
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        if (summon->GetEntry() != NPC_ROCKJAW_INVADER)
+            return;
+
+        _invaders.insert(summon->GetGUID());
+
+        // The static invaders keep their creature_sparring_template cap so the Coldridge
+        // Defenders cannot farm them out from under the players. His own are his to kill,
+        // by rifle or by hand.
+        summon->SetSparringHealthLimit(0.0f);
+    }
+
+    void SummonedCreatureDespawn(Creature* summon) override
+    {
+        _invaders.erase(summon->GetGUID());
+    }
+
+    void EnqueueInvader(Unit* invader, Seconds minTime, Seconds maxTime)
     {
         _scheduler.Schedule(minTime, maxTime, [this, guid = invader->GetGUID()](TaskContext /*task*/)
         {
             _invadersToShoot.push(guid);
         });
+    }
+
+    void SummonInvader()
+    {
+        Creature* invader = me->SummonCreature(NPC_ROCKJAW_INVADER, Trinity::Containers::SelectRandomContainerElement(RockjawInvaderSpawnPoints), TEMPSUMMON_CORPSE_TIMED_DESPAWN, INVADER_DESPAWN_TIME);
+        if (!invader)
+            return;
+
+        // Invaders that walk into his line of fire get shot sooner
+        if (me->HasInArc(float(M_PI), invader) && !me->IsInCombat())
+            EnqueueInvader(invader, Seconds(1), Seconds(3));
+        else
+            EnqueueInvader(invader, Seconds(5), Seconds(8));
+
+        invader->AI()->AttackStart(me);
+    }
+
+    void ShootNextInvader(TaskContext& task)
+    {
+        if (_invadersToShoot.empty())
+            return;
+
+        ObjectGuid guid = _invadersToShoot.front();
+        _invadersToShoot.pop();
+
+        Creature* invader = ObjectAccessor::GetCreature(*me, guid);
+        if (!invader || !invader->IsAlive())
+            return;
+
+        // Don't snipe a kill out from under a player - wait until they are done with it
+        if (invader->GetVictim() && invader->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+        {
+            _invadersToShoot.push(guid);
+            return;
+        }
+
+        if (!me->CastSpell(invader, SPELL_SHOOT, false))
+        {
+            // Out of range or line of sight, try again later
+            _invadersToShoot.push(guid);
+            return;
+        }
+
+        if (roll_chance_i(50))
+            Talk(SAY_SHOOT_ROCKJAW, invader);
+
+        // One shot, one invader. Wait for the bullet to land before dropping him.
+        task.Schedule(Seconds(SHOT_TRAVEL_TIME), [this, guid](TaskContext /*killTask*/)
+        {
+            Creature* target = ObjectAccessor::GetCreature(*me, guid);
+            if (target && target->IsAlive())
+                me->Kill(target);
+        });
+    }
+
+    // Re-applied on every evade and respawn, not just once, so he cannot drift off his post.
+    void Reset() override
+    {
+        // He never chases - they come to him.
+        SetCombatMovement(false);
+        me->SetReactState(REACT_DEFENSIVE);
     }
 
     void InitializeAI() override
@@ -508,38 +626,20 @@ struct npc_joren_ironstock : public ScriptedAI
 
         _scheduler.Schedule(Seconds(1), [this](TaskContext task)
         {
-            if (Creature* invader = me->SummonCreature(NPC_ROCKJAW_INVADER, Trinity::Containers::SelectRandomContainerElement(RockjawInvaderSpawnPoints), TEMPSUMMON_CORPSE_TIMED_DESPAWN, INVADER_DESPAWN_TIME))
+            if (IsFightingOutsider())
             {
-                // Invaders that walk into his line of fire get shot sooner
-                if (me->HasInArc(float(M_PI), invader) && !me->IsInCombat())
-                    EnqueueInvader(invader, Seconds(1), Seconds(3));
-                else
-                    EnqueueInvader(invader, Seconds(5), Seconds(8));
-
-                invader->AI()->AttackStart(me);
+                // Hold the vignette until he is out of combat with whatever that was
+                task.Repeat(Seconds(2));
+                return;
             }
+
+            SummonInvader();
             task.Repeat(Seconds(3), Seconds(20));
         });
 
         _scheduler.Schedule(Seconds(1), [this](TaskContext task)
         {
-            if (!_invadersToShoot.empty())
-            {
-                ObjectGuid guid = _invadersToShoot.front();
-                _invadersToShoot.pop();
-
-                Creature* invader = ObjectAccessor::GetCreature(*me, guid);
-                if (invader && invader->IsAlive())
-                {
-                    if (me->CastSpell(invader, SPELL_SHOOT, false))
-                    {
-                        if (roll_chance_i(50))
-                            Talk(SAY_SHOOT_ROCKJAW, invader);
-                    }
-                    else // Out of range or line of sight, try again later
-                        _invadersToShoot.push(guid);
-                }
-            }
+            ShootNextInvader(task);
             task.Repeat(Seconds(1));
         });
     }
@@ -550,11 +650,14 @@ struct npc_joren_ironstock : public ScriptedAI
 
         if (!UpdateVictim())
             return;
+
+        DoMeleeAttackIfReady();
     }
 
 private:
     TaskScheduler _scheduler;
     std::queue<ObjectGuid> _invadersToShoot;
+    GuidUnorderedSet _invaders;
 };
 
 void AddSC_dun_morogh_area_coldridge_valley()

@@ -25,9 +25,11 @@
 #include "Random.h"
 #include "ScriptedCreature.h"
 #include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "SpellScript.h"
 #include "TemporarySummon.h"
 #include "ThreatManager.h"
+#include <algorithm>
 #include <queue>
 #include <unordered_set>
 
@@ -491,7 +493,11 @@ enum JorenIronstockData
     INVADER_DESPAWN_TIME           = 18 * IN_MILLISECONDS,
 
     // Time between the shot leaving the barrel and the invader dropping
-    SHOT_TRAVEL_TIME               = 1
+    SHOT_TRAVEL_TIME               = 1,
+
+    // Roughly how many melee swings an invader should survive. Raise it to make his
+    // melee weaker, lower it to make him hit harder.
+    MELEE_SWINGS_TO_KILL           = 4
 };
 
 // 37081 - Joren Ironstock
@@ -531,6 +537,18 @@ struct npc_joren_ironstock : public ScriptedAI
                 return true;
 
         return false;
+    }
+
+    // A level 65 dwarf flattens a level 1 trogg in a single swing, which makes the melee
+    // look like a bug rather than a brawl. Cap what he can take off an invader per hit so
+    // it costs him a few swings. The rifle is unaffected - that one is meant to be lethal,
+    // and it kills through Unit::Kill, which never reaches this hook.
+    void DamageDealt(Unit* victim, uint32& damage, DamageEffectType damageType) override
+    {
+        if (damageType != DIRECT_DAMAGE || !IsVignetteInvader(victim))
+            return;
+
+        damage = std::min<uint32>(damage, std::max<uint32>(1, victim->GetMaxHealth() / MELEE_SWINGS_TO_KILL));
     }
 
     void JustSummoned(Creature* summon) override
@@ -574,42 +592,65 @@ struct npc_joren_ironstock : public ScriptedAI
         invader->AI()->AttackStart(me);
     }
 
+    // Mirrors what Spell::GetMinMaxRange works out for the shot, so the queue only offers
+    // him targets the cast will actually accept.
+    bool IsInShootingRange(Unit const* invader) const
+    {
+        SpellInfo const* shoot = sSpellMgr->GetSpellInfo(SPELL_SHOOT);
+        if (!shoot)
+            return false;
+
+        float maxRange = me->GetSpellMaxRangeForTarget(invader, shoot) + me->GetCombatReach() + invader->GetCombatReach();
+        return me->GetExactDist(invader) <= maxRange;
+    }
+
     void ShootNextInvader(TaskContext& task)
     {
-        if (_invadersToShoot.empty())
-            return;
-
-        ObjectGuid guid = _invadersToShoot.front();
-        _invadersToShoot.pop();
-
-        Creature* invader = ObjectAccessor::GetCreature(*me, guid);
-        if (!invader || !invader->IsAlive())
-            return;
-
-        // Don't snipe a kill out from under a player - wait until they are done with it
-        if (invader->GetVictim() && invader->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+        // Take the first invader that has closed to within rifle range. The ones still
+        // running in keep their place in the queue and get shot the moment they arrive,
+        // instead of wasting this tick on a target he cannot reach yet.
+        for (size_t remaining = _invadersToShoot.size(); remaining > 0; --remaining)
         {
-            _invadersToShoot.push(guid);
+            ObjectGuid guid = _invadersToShoot.front();
+            _invadersToShoot.pop();
+
+            Creature* invader = ObjectAccessor::GetCreature(*me, guid);
+            if (!invader || !invader->IsAlive())
+                continue; // gone for good, drop it from the queue
+
+            // Don't snipe a kill out from under a player - wait until they are done with it
+            if (invader->GetVictim() && invader->GetVictim()->GetTypeId() == TYPEID_PLAYER)
+            {
+                _invadersToShoot.push(guid);
+                continue;
+            }
+
+            if (!IsInShootingRange(invader))
+            {
+                _invadersToShoot.push(guid);
+                continue;
+            }
+
+            if (!me->CastSpell(invader, SPELL_SHOOT, false))
+            {
+                // No line of sight yet, try again later
+                _invadersToShoot.push(guid);
+                continue;
+            }
+
+            if (roll_chance_i(50))
+                Talk(SAY_SHOOT_ROCKJAW, invader);
+
+            // One shot, one invader. Wait for the bullet to land before dropping him.
+            task.Schedule(Seconds(SHOT_TRAVEL_TIME), [this, guid](TaskContext /*killTask*/)
+            {
+                Creature* target = ObjectAccessor::GetCreature(*me, guid);
+                if (target && target->IsAlive())
+                    me->Kill(target);
+            });
+
             return;
         }
-
-        if (!me->CastSpell(invader, SPELL_SHOOT, false))
-        {
-            // Out of range or line of sight, try again later
-            _invadersToShoot.push(guid);
-            return;
-        }
-
-        if (roll_chance_i(50))
-            Talk(SAY_SHOOT_ROCKJAW, invader);
-
-        // One shot, one invader. Wait for the bullet to land before dropping him.
-        task.Schedule(Seconds(SHOT_TRAVEL_TIME), [this, guid](TaskContext /*killTask*/)
-        {
-            Creature* target = ObjectAccessor::GetCreature(*me, guid);
-            if (target && target->IsAlive())
-                me->Kill(target);
-        });
     }
 
     // Re-applied on every evade and respawn, not just once, so he cannot drift off his post.

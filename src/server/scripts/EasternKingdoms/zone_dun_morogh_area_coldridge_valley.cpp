@@ -482,7 +482,9 @@ enum JorenIronstockData
 
     SAY_SHOOT_ROCKJAW              = 0,
 
-    SPELL_SHOOT                    = 70014,
+    // Upstream uses 70014, which nothing in this core references. 6660 is the
+    // Shoot this core already uses for the Coldridge Defender riflemen (37177).
+    SPELL_SHOOT                    = 6660,
 
     INVADER_DESPAWN_TIME           = 18 * IN_MILLISECONDS
 };

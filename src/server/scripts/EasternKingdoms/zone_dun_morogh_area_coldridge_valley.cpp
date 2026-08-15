@@ -484,7 +484,11 @@ enum JorenIronstockData
 {
     NPC_ROCKJAW_INVADER            = 37070,
 
-    SAY_SHOOT_ROCKJAW              = 0,
+    // creature_text stores his three lines as three separate groups, one line each, and
+    // Talk() picks a group - so each one has to be asked for by name or it never plays.
+    SAY_SHOOT_ROCKJAW              = 0,    // "Eat dwarven lead!"
+    SAY_MELEE_ROCKJAW              = 1,    // "Get back, ye filthy beast!"
+    SAY_BATTLE_CRY                 = 2,    // "For Ironforge!"
 
     // Upstream uses 70014, which nothing in this core references. 6660 is the
     // Shoot this core already uses for the Coldridge Defender riflemen (37177).
@@ -501,7 +505,13 @@ enum JorenIronstockData
 
     // Roughly how many melee swings an invader should survive. Raise it to make his
     // melee weaker, lower it to make him hit harder.
-    MELEE_SWINGS_TO_KILL           = 4
+    MELEE_SWINGS_TO_KILL           = 4,
+
+    // He swings about once a second, so the melee bark needs a leash of its own
+    SHOOT_BARK_CHANCE              = 50,
+    MELEE_BARK_CHANCE              = 35,
+    MELEE_BARK_COOLDOWN            = 6 * IN_MILLISECONDS,
+    BATTLE_CRY_CHANCE              = 25
 };
 
 // 37081 - Joren Ironstock
@@ -553,6 +563,22 @@ struct npc_joren_ironstock : public ScriptedAI
             return;
 
         damage = std::min<uint32>(damage, std::max<uint32>(1, victim->GetMaxHealth() / MELEE_SWINGS_TO_KILL));
+
+        // Something got close enough to swing at - that is what the melee line is for
+        if (!_meleeBarkCooldown && roll_chance_i(MELEE_BARK_CHANCE))
+        {
+            Talk(SAY_MELEE_ROCKJAW, victim);
+            _meleeBarkCooldown = MELEE_BARK_COOLDOWN;
+        }
+    }
+
+    void KilledUnit(Unit* victim) override
+    {
+        if (!IsVignetteInvader(victim))
+            return;
+
+        if (roll_chance_i(BATTLE_CRY_CHANCE))
+            Talk(SAY_BATTLE_CRY);
     }
 
     void JustSummoned(Creature* summon) override
@@ -644,7 +670,7 @@ struct npc_joren_ironstock : public ScriptedAI
             return;
         }
 
-        if (roll_chance_i(50))
+        if (roll_chance_i(SHOOT_BARK_CHANCE))
             Talk(SAY_SHOOT_ROCKJAW, invader);
 
         // One shot, one invader. Wait for the bullet to land before dropping him.
@@ -723,6 +749,11 @@ struct npc_joren_ironstock : public ScriptedAI
     {
         _scheduler.Update(diff);
 
+        if (_meleeBarkCooldown > diff)
+            _meleeBarkCooldown -= diff;
+        else
+            _meleeBarkCooldown = 0;
+
         if (!UpdateVictim())
             return;
 
@@ -733,6 +764,7 @@ private:
     TaskScheduler _scheduler;
     std::queue<ObjectGuid> _invadersToShoot;
     GuidUnorderedSet _invaders;
+    uint32 _meleeBarkCooldown = 0;
 };
 
 void AddSC_dun_morogh_area_coldridge_valley()

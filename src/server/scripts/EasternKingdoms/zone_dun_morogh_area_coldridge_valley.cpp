@@ -18,6 +18,7 @@
 #include "ScriptMgr.h"
 #include "CombatAI.h"
 #include "Containers.h"
+#include "HostileRefManager.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
@@ -31,7 +32,9 @@
 #include "ThreatManager.h"
 #include <algorithm>
 #include <queue>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 enum WoundedColdridgeMountaineer
 {
@@ -507,6 +510,10 @@ enum JorenIronstockData
     // melee weaker, lower it to make him hit harder.
     MELEE_SWINGS_TO_KILL           = 4,
 
+    // How often he checks that his invaders are still coming for him instead of trading
+    // blows with whatever stepped into their path, in milliseconds.
+    INVADER_LEASH_INTERVAL         = 500,
+
     // He swings about once a second, so the melee bark needs a leash of its own
     SHOOT_BARK_CHANCE              = 50,
     MELEE_BARK_CHANCE              = 35,
@@ -514,12 +521,20 @@ enum JorenIronstockData
     BATTLE_CRY_CHANCE              = 25
 };
 
+// Threat handed to an invader's rightful target on every leash tick. Everything else on
+// its list is zeroed in the same breath, so any amount clear of zero holds the lead - this
+// is just comfortably above what a stray attacker can pile on between two ticks.
+float const INVADER_LEASH_THREAT = 500.0f;
+
 // 37081 - Joren Ironstock
 //
 // He holds the pass and never leaves it: the invaders he summons run to him, he guns them
 // down from where he stands. Only his own summons are part of the vignette - the static
-// Rockjaw Invader spawns nearby are the players' business, not his, and if anything that
-// is not one of his summons picks a fight with him the vignette pauses until he is clear.
+// Rockjaw Invader spawns nearby are the players' business, and he ignores them outright,
+// even when one is hitting him. His own are leashed the other way about: each one fights
+// Joren, or the first player to lay into it, and nothing else - a Coldridge Defender that
+// wades into the charge gets run past, not fought. Anything that is neither an invader nor
+// one of his summons still gets a fight, and the vignette pauses until he is clear of it.
 struct npc_joren_ironstock : public ScriptedAI
 {
     npc_joren_ironstock(Creature* creature) : ScriptedAI(creature) { }
@@ -540,14 +555,37 @@ struct npc_joren_ironstock : public ScriptedAI
         return true;
     }
 
-    // True while something outside the vignette holds threat on him.
+    // A Rockjaw Invader that is not one of his summons: one of the static spawns that
+    // wandered into him, or one a Coldridge Defender pushed his way.
+    bool IsStrayInvader(Unit const* who) const
+    {
+        return who && who->GetEntry() == NPC_ROCKJAW_INVADER && !IsVignetteInvader(who);
+    }
+
+    // A stray that swings at him would otherwise sit on his threat list for good:
+    // CanAIAttack refuses to let him pick it as a victim, so nothing ever clears the
+    // reference, and the spawner would hold the vignette for a fight he is never going to
+    // have. Shake it off instead - that one is the players' mob.
+    void DropStrayInvaderThreat()
+    {
+        std::vector<Unit*> strays;
+        for (HostileReference const* ref : me->getThreatManager().getThreatList())
+            if (IsStrayInvader(ref->getTarget()))
+                strays.push_back(ref->getTarget());
+
+        for (Unit* stray : strays)
+            stray->getHostileRefManager().deleteReference(me);
+    }
+
+    // True while something outside the vignette holds threat on him. Stray invaders do not
+    // count - he pays them no mind, and DropStrayInvaderThreat clears them off him.
     bool IsFightingOutsider() const
     {
         if (!me->IsInCombat())
             return false;
 
         for (HostileReference const* ref : me->getThreatManager().getThreatList())
-            if (!IsVignetteInvader(ref->getTarget()))
+            if (!IsVignetteInvader(ref->getTarget()) && !IsStrayInvader(ref->getTarget()))
                 return true;
 
         return false;
@@ -605,6 +643,60 @@ struct npc_joren_ironstock : public ScriptedAI
     void SummonedCreatureDespawn(Creature* summon) override
     {
         _invaders.erase(summon->GetGUID());
+        _invaderClaims.erase(summon->GetGUID());
+    }
+
+    // Who an invader is allowed to fight: Joren, or the first player to lay into it. The
+    // claim sticks for the invader's whole short life, so a Coldridge Defender wading in
+    // afterwards cannot pull it off either of them.
+    Unit* GetInvaderTarget(Creature* invader)
+    {
+        auto claim = _invaderClaims.find(invader->GetGUID());
+        if (claim != _invaderClaims.end())
+        {
+            if (Player* claimant = ObjectAccessor::GetPlayer(*me, claim->second))
+                if (claimant->IsAlive() && invader->IsValidAttackTarget(claimant))
+                    return claimant;
+
+            // Dead, gone, or no longer fair game - it goes back to running at Joren.
+            _invaderClaims.erase(claim);
+        }
+
+        for (HostileReference const* ref : invader->getThreatManager().getThreatList())
+        {
+            Unit* hater = ref->getTarget();
+            if (hater && hater->GetTypeId() == TYPEID_PLAYER && ref->getThreat() > 0.0f)
+            {
+                _invaderClaims[invader->GetGUID()] = hater->GetGUID();
+                return hater;
+            }
+        }
+
+        return me;
+    }
+
+    // Keep every invader pointed at whoever owns it. A Coldridge Defender that steps into
+    // the charge piles on threat like anything else, and without this the invader turns
+    // round and brawls with the defender halfway up the pass instead of reaching Joren.
+    void LeashInvaders()
+    {
+        for (ObjectGuid const& guid : _invaders)
+        {
+            Creature* invader = ObjectAccessor::GetCreature(*me, guid);
+            if (!invader || !invader->IsAlive() || !invader->IsAIEnabled)
+                continue;
+
+            Unit* target = GetInvaderTarget(invader);
+
+            // Zero the rest rather than dropping them: the defender is still swinging, so
+            // the reference comes straight back either way. It just never reaches the top
+            // of the list, because the owner is topped up in the same pass.
+            invader->getThreatManager().resetAggro([target](Unit* who) { return who != target; });
+            invader->AddThreat(target, INVADER_LEASH_THREAT);
+
+            if (invader->GetVictim() != target)
+                invader->AI()->AttackStart(target);
+        }
     }
 
     void EnqueueInvader(Unit* invader, Seconds minTime, Seconds maxTime)
@@ -743,6 +835,13 @@ struct npc_joren_ironstock : public ScriptedAI
             ShootNextInvader(task);
             task.Repeat(Seconds(1));
         });
+
+        _scheduler.Schedule(Milliseconds(INVADER_LEASH_INTERVAL), [this](TaskContext task)
+        {
+            DropStrayInvaderThreat();
+            LeashInvaders();
+            task.Repeat();
+        });
     }
 
     void UpdateAI(uint32 diff) override
@@ -764,6 +863,7 @@ private:
     TaskScheduler _scheduler;
     std::queue<ObjectGuid> _invadersToShoot;
     GuidUnorderedSet _invaders;
+    std::unordered_map<ObjectGuid, ObjectGuid> _invaderClaims;
     uint32 _meleeBarkCooldown = 0;
 };
 

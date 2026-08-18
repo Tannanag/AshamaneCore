@@ -424,6 +424,78 @@ def linear_chain(rt, moves):
     return chain + chain[-2:0:-1]
 
 
+# Legs confirmed in game that the sniff never caught. A lap is only as complete
+# as the packets behind it: where the player followed a route in one direction
+# only, or a spline went missing, the recovered lap can cut a corner the NPC
+# does not cut. Each entry names the leg to split and the stop to put in it, by
+# coordinate rather than by point number so it survives the route being
+# re-derived.
+IN_GAME_INSERTS = {
+    # 167038's western spur was only ever caught on the return pass. Outbound it
+    # ran (-6120.65, 375.19) straight to (-6130.13, 383.76), a 12.8 yd diagonal,
+    # while coming back it stopped at (-6129.93, 375.75) in between. Observed in
+    # game to stop there in both directions, which makes the spur symmetric and
+    # replaces the diagonal with two legs of 9.3 and 8.0 yd.
+    167038: [dict(after=(-6120.650, 375.186),
+                  before=(-6130.130, 383.755),
+                  insert=(-6129.930, 375.748))],
+}
+
+
+def _node_at(nodes, xy, guid):
+    """Index of the node standing at xy, or bail out."""
+    best, bd = None, 1.0
+    for i, p in enumerate(nodes):
+        dd = math.dist(p[:2], xy)
+        if dd < bd:
+            best, bd = i, dd
+    if best is None:
+        sys.exit(f"guid {guid}: in-game fix names ({xy[0]:.3f}, {xy[1]:.3f}), "
+                 f"which is not a node on this route")
+    return best
+
+
+def apply_in_game_fixes(guid, order, nodes):
+    """Splice in stops the sniff missed but the server owner confirmed.
+
+    Matching on the pair of nodes either side of the gap, rather than on a point
+    number, keeps this stable: the leg is identified by where it runs, so
+    re-deriving the route cannot silently move the insertion somewhere else. If
+    the leg is no longer there -- because better data already covers it -- the
+    run stops rather than quietly doing nothing.
+    """
+    out = list(order)
+    for fix in IN_GAME_INSERTS.get(guid, []):
+        ia = _node_at(nodes, fix['after'], guid)
+        ib = _node_at(nodes, fix['before'], guid)
+        ii = _node_at(nodes, fix['insert'], guid)
+        spots = [k for k in range(len(out))
+                 if out[k] == ia and out[(k + 1) % len(out)] == ib]
+        if len(spots) != 1:
+            sys.exit(f"guid {guid}: in-game fix expected exactly one "
+                     f"({fix['after']}) -> ({fix['before']}) leg, found {len(spots)}")
+        out.insert(spots[0] + 1, ii)
+    return out
+
+
+def _dedupe_consecutive(order):
+    """Drop a node that immediately repeats itself.
+
+    Clustering jittered spellings into one waypoint can leave the same node
+    twice in a row, where the sniff recorded two arrivals a few centimetres
+    apart. Emitted literally that is a zero-length leg: the core issues a move
+    to where the NPC already stands. The wrap-around counts too, since the path
+    is cyclic.
+    """
+    out = []
+    for i in order:
+        if not out or out[-1] != i:
+            out.append(i)
+    while len(out) > 1 and out[0] == out[-1]:
+        out.pop()
+    return out
+
+
 def recover_order(rt, moves):
     """The waypoint order to emit, and how it was arrived at.
 
@@ -445,12 +517,13 @@ def recover_order(rt, moves):
     if line:
         cands.append((line, True, "spanning-tree line"))
 
-    ok = [(w, c, h) for w, c, h in cands if max_leg(nodes, w) <= LEG_SANITY]
+    cands = [(_dedupe_consecutive(w), c, h) for w, c, h in cands]
+    ok = [(w, c, h) for w, c, h in cands if w and max_leg(nodes, w) <= LEG_SANITY]
     if ok:
         w, c, h = max(ok, key=lambda t: (len(set(t[0])), t[1],
                                          -len(t[0]), -max_leg(nodes, t[0])))
         return w, h
-    return full_order(rt), "successor walk"
+    return _dedupe_consecutive(full_order(rt)), "successor walk"
 
 
 def match_spawn(rt, order, spawns, entry):
@@ -552,6 +625,10 @@ def emit_sql(picked, by_spawn, player_at):
             sys.exit(f"guid {guid} matched by both retail spawn "
                      f"{claimed[guid]} and {x['counter']} -- ambiguous")
         claimed[guid] = x['counter']
+        # keyed by guid, so this has to wait until the spawn is identified
+        before_fix = len(order)
+        order = apply_in_game_fixes(guid, order, rt['nodes'])
+        added = len(order) - before_fix
         mt = 1 if route_speed(v) > RUN_SPEED_CUTOFF else 0
         delays = node_delays(v, rt, order, player_at)
         nodes = rt['nodes']
@@ -586,7 +663,8 @@ def emit_sql(picked, by_spawn, player_at):
         print(f"--   {len(order)} waypoints, {shape} via {how}, "
               f"{'run' if mt else 'walk'} "
               f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay"
-              + (f", {dropped} unlinked node(s) dropped" if dropped else ""))
+              + (f", {dropped} unlinked node(s) dropped" if dropped else "")
+              + (f", {added} stop(s) added from in-game observation" if added else ""))
         for w in warn:
             print(f"--   WARNING: {w}")
         print(f"SET @NPC := {guid};  SET @PATH := @NPC * 10;")

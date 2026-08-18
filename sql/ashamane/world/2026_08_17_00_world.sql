@@ -1,25 +1,26 @@
 -- Coldridge Valley: give nine spawns their retail patrol routes.
 --
 -- All nine stand still today (`MovementType` = 0, `wander_distance` = 0) on
--- spots where retail walks them a fixed route. 9 paths, 137 waypoints:
+-- spots where retail walks them a fixed route. 9 paths, 197 waypoints:
 --
---   entry  NPC                     guid    path      rows  speed  shape
---     658  Sten Stoutarm         167020   1670200      3   walk   circuit
---   37087  Jona Ironstock        166999   1669990     12   walk   circuit
---     853  Coldridge Mountaineer 166975   1669750     15   walk   circuit
---     853  Coldridge Mountaineer 166972   1669720     23   walk   circuit
---     853  Coldridge Mountaineer 167026   1670260      7   walk   circuit  (see below)
---   37218  Coldridge Citizen     167017   1670170     10   walk   circuit
---   37218  Coldridge Citizen     167012   1670120     25   walk   circuit
---   37218  Coldridge Citizen     167038   1670380     14   walk   circuit  (see below)
---   37073  Rockjaw Goon          167220   1672200     28   RUN    out-and-back
+--   entry  NPC                     guid    path     rows  nodes  speed  shape
+--     658  Sten Stoutarm         167020   1670200     3      3   walk   circuit
+--   37087  Jona Ironstock        166999   1669990    12     12   walk   circuit
+--     853  Coldridge Mountaineer 166975   1669750    15     15   walk   circuit
+--     853  Coldridge Mountaineer 166972   1669720    46     23   walk   back-and-forth
+--     853  Coldridge Mountaineer 167026   1670260    11     10   walk   back-and-forth
+--   37218  Coldridge Citizen     167017   1670170    10     10   walk   circuit
+--   37218  Coldridge Citizen     167012   1670120    25     25   walk   circuit
+--   37218  Coldridge Citizen     167038   1670380    47     31   walk   back-and-forth
+--   37073  Rockjaw Goon          167220   1672200    28     15   RUN    back-and-forth
 --
 -- Where the coordinates come from
 --
 -- Two retail 12.1.0.69299 sniffs of the valley, 62,711 packets carrying 13,863
--- monster-moves over about 31 minutes. WowPacketParser cannot read this build
--- -- its V12_1_0_69214 opcode tables are empty stubs upstream -- so the 0x5E0002
--- spline payloads were decoded directly by `wpp_movement.py`, and the node order
+-- monster-moves over about 31 minutes, with each of these nine followed for at
+-- least one full lap. WowPacketParser cannot read this build -- its
+-- V12_1_0_69214 opcode tables are empty stubs upstream -- so the 0x5E0002 spline
+-- payloads were decoded directly by `wpp_movement.py`, and the node order
 -- recovered by `wpp_patrols.py`. Both are in the repo root; `wpp_patrols.py --sql`
 -- regenerates every block below, so none of this is hand-transcribed.
 --
@@ -27,37 +28,38 @@
 -- wander never repeats a coordinate exactly, which is what separates these nine
 -- from the 111 wanderers in the same sniff.
 --
--- Only nodes joined by observed legs are emitted
+-- Circuits and back-and-forth routes
 --
--- The reconstruction also turns up nodes it cannot place: stretches whose
--- linking legs were never seen, and one-off points that may be combat detours.
--- Those are dropped rather than appended, because a node in the wrong position
--- is worse than a node left out -- it makes the NPC walk its circuit and then
--- strike out across the map to each stray point in turn. 22 nodes were dropped
--- this way, from three of the nine routes.
+-- Not every route is a loop. Four of these nine walk out along a line and turn
+-- round at each end -- A B C B A rather than A B C A -- and the Rockjaw Goon's
+-- line runs 200 yards, from (-6270.8, 450.5) down to (-6384.5, 281.3).
 --
--- Out-and-back routes
+-- The order is taken from the sniff rather than inferred, which settles the
+-- question outright: find a stretch running from some node back to that same
+-- node, and that is one lap in the order the NPC actually walked it. A circuit
+-- lists each node once, a back-and-forth lists its middle nodes twice, and
+-- nothing has to decide in advance which it is looking at. Six of the nine come
+-- straight from a gap-free lap of exactly this kind.
 --
--- Not every route is a circuit. The Rockjaw Goon patrols a 200 yard line from
--- (-6270.8, 450.5) down to (-6384.5, 281.3) and turns round at each end, and a
--- greedy successor walk cannot represent that -- it stops the moment an edge
--- leads back to a node it already emitted, which gave 7 nodes of 15 and an 87
--- yard jump to close them.
+-- Two need more care. Where a lap spans a gap event the NPC moved unobserved in
+-- the middle, so the nodes either side of the hole end up adjacent and the core
+-- straight-lines between them; such a lap is used only when its geometry is
+-- still plausible. And where no single lap was captured end to end, the route
+-- can still be recovered from the maximum spanning tree over observed
+-- transitions, which for a line is the line itself -- every node of degree 2
+-- except the two ends. That is how the Goon is done: its ends are 200 yards
+-- apart and never adjacent, and are visited 0.62 as often as its middle,
+-- because each lap crosses the middle twice and touches each end once.
 --
--- Such a route is recovered from its shape instead. The maximum spanning tree
--- over observed transitions *is* the line, every node of degree 2 bar the two
--- ends, and two things then tell a line from a circuit: a circuit is observed
--- closing, where a line's ends are 200 yards apart and never adjacent; and a
--- line's ends are visited about half as often as its middle, because each lap
--- passes through the middle twice and touches each end once. The Goon's ends
--- come in at 0.62 of its middle, with no closing transition.
+-- Back-and-forth routes are emitted as the full round trip, out and back
+-- through the interior, because WaypointMovementGenerator.cpp:134 cycles a path
+-- rather than ping-ponging it (`i_currentNode = (i_currentNode+1) % size`). A
+-- one-way chain would teleport-walk the NPC home on every lap.
 --
--- It is emitted as the full round trip, out along the line and back through the
--- interior, because WaypointMovementGenerator.cpp:134 cycles a path rather than
--- ping-ponging it (`i_currentNode = (i_currentNode+1) % i_path->size()`). A
--- one-way chain would teleport-walk the Goon from the far end back to the start
--- on every lap. 28 rows over 15 distinct nodes, longest leg 23.8 yards, and the
--- spawn point falls on the path at rows 8 and 22.
+-- Candidates are filtered on geometry before anything else: no route here has a
+-- leg over 24.9 yards, so one that does is missing a stretch whatever produced
+-- it. Two nodes were dropped this way across all nine routes, one each from
+-- 167017 and 167026, both reachable only across a 56 yard hole.
 --
 -- Why these guids and not others
 --
@@ -69,34 +71,28 @@
 -- bit-for-bit one of the recovered nodes (0.000 to 0.005 yd, z within 0.03).
 -- That is decisive even where a neighbouring spawn also sits near the route --
 -- guid 167013 is 0.797 yd off 167038's path, against 167038's own 0.000.
--- Matching considers every recovered node, including the dropped ones: where
+-- Matching considers every recovered node, including any later dropped: where
 -- the spawn sits is a question about identity, which nodes are safe to emit is
 -- a question about ordering, and conflating the two loses the Rockjaw Goon.
 --
 -- Coldridge geometry is unchanged between 7.3.5 and 12.1.0, so the retail
 -- coordinates go in as-is: no translation, no snapping.
 --
--- Three spawns worth flagging
+-- Two spawns worth flagging
 --
--- * 167026 is still a stub rather than a circuit. Its longest leg is 45 yards
---   and its own spawn point sits 7 yards off the path, both signs the discarded
---   nodes carried the route between two ends. Unlike the Goon it does not
---   reconstruct as a line either -- its spanning tree branches -- so there is
---   nothing better to emit from this sniff. It needs a longer continuous follow
---   before it can be done properly; revert that one block if it reads badly.
--- * 167038 has a 32 yard closing leg, mild by comparison but the same cause. It
---   is an out-and-back in truth, but its ends were seen too few times to pass
---   the reversal test, so it is emitted as the circuit the walk recovered.
--- * 167026 is also the one non-exact pairing, 6.17 yd from its nearest node with
---   the next candidate at 13.9 yd. Confirm with `.npc info` on the Mountaineer
---   near (-6183, 376).
+-- * 167026 is the one non-exact pairing, 6.17 yd from its nearest node with the
+--   next candidate at 13.9 yd. It is also the least well observed of the nine --
+--   the player was beyond 90 yd for 39% of its moves -- so it is the one route
+--   here not backed by a close follow. Its emitted lap is clean and its longest
+--   leg is 24.6 yd, but confirm the spawn with `.npc info` on the Mountaineer
+--   near (-6183, 376) and revert that block if it is the wrong one.
 -- * 167017 carried `creature_addon.StandState` = 3, so it sat. Retail walks it,
 --   and the rest of its addon row was defaults, so the row is rewritten with
 --   StandState 0. It was the only one of the nine with an addon row at all.
 --
 -- How each column was derived
 --
---   position_x/y/z  float32 node coordinates in recovered route order
+--   position_x/y/z  float32 node coordinates in observed lap order
 --   move_type       distance / spline duration; the routes land on either
 --                   ~2.5 yd/s (walk) or ~6.0 yd/s, and only the Rockjaw Goon
 --                   is in the second group at 5.95 yd/s
@@ -112,7 +108,8 @@
 -- sniff simply stops receiving the NPC's packets while the clock keeps running,
 -- which is where every implausible figure came from (one node reads as a 20-minute
 -- pause on two disagreeing samples). A node needs three surviving samples before
--- a median is trusted; below that it is written as no delay.
+-- a median is trusted; below that it is written as no delay. On a back-and-forth
+-- route a mid-route delay is written at both passes, which is what the NPC does.
 --
 -- Audit
 --
@@ -120,6 +117,8 @@
 --   guid * 10 path ids collide with nothing.
 -- * All nine spawns confirmed still at `MovementType` = 0 and the coordinates
 --   above before writing.
+-- * Longest leg on any of the nine routes is 24.9 yd; every spawn point but
+--   167026's falls on its own path to within 0.005 yd.
 -- * `ObjectMgr::LoadCreatureAddons` silently downgrades `MovementType` = 2 to
 --   idle when the spawn has no `creature_addon.path_id`, so the addon row is
 --   mandatory rather than optional -- hence the DELETE/INSERT pair per spawn.
@@ -141,7 +140,7 @@
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 25215147
 --   matched guid 167017 at 0.001 yd from a route node (next candidate 5.4 yd)
---   10 waypoints, circuit, walk (2.40 yd/s), 0 node(s) with a delay, 1 unlinked node(s) dropped
+--   10 waypoints, circuit via lap spanning a gap, walk (2.40 yd/s), 0 node(s) with a delay, 1 unlinked node(s) dropped
 SET @NPC := 167017;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -162,7 +161,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 49319
 --   matched guid 166975 at 0.000 yd from a route node (next candidate 3.5 yd)
---   15 waypoints, circuit, walk (2.40 yd/s), 1 node(s) with a delay
+--   15 waypoints, circuit via gap-free lap, walk (2.40 yd/s), 1 node(s) with a delay
 SET @NPC := 166975;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -188,7 +187,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Sten Stoutarm (entry 658) -- retail spawn 49318
 --   matched guid 167020 at 0.003 yd from a route node (the only spawn of this entry in the box)
---   3 waypoints, circuit, walk (2.41 yd/s), 0 node(s) with a delay
+--   3 waypoints, circuit via gap-free lap, walk (2.41 yd/s), 0 node(s) with a delay
 SET @NPC := 167020;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -202,7 +201,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Jona Ironstock (entry 37087) -- retail spawn 49323
 --   matched guid 166999 at 0.005 yd from a route node (the only spawn of this entry in the box)
---   12 waypoints, circuit, walk (1.87 yd/s), 0 node(s) with a delay
+--   12 waypoints, circuit via gap-free lap, walk (1.87 yd/s), 0 node(s) with a delay
 SET @NPC := 166999;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -225,7 +224,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 50380967
 --   matched guid 166972 at 0.005 yd from a route node (next candidate 3.7 yd)
---   23 waypoints, circuit, walk (2.25 yd/s), 1 node(s) with a delay
+--   46 waypoints, back-and-forth over 23 nodes via gap-free lap, walk (2.25 yd/s), 1 node(s) with a delay
 SET @NPC := 166972;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -233,7 +232,7 @@ INSERT INTO `creature_addon` (`guid`,`path_id`,`mount`,`StandState`,`AnimTier`,`
 (@NPC,@PATH,0,0,0,0,1,0,0,0,0,0,0,NULL);
 DELETE FROM `waypoint_data` WHERE `id`=@PATH;
 INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`,`orientation`,`delay`,`move_type`,`action`,`action_chance`,`wpguid`) VALUES
-(@PATH,1,-6117.872,375.622,395.597,0,0,0,0,100,0),
+(@PATH,1,-6104.917,375.059,395.597,0,0,0,0,100,0),
 (@PATH,2,-6099.723,375.894,395.597,0,0,0,0,100,0),
 (@PATH,3,-6099.202,377.140,395.597,0,7636,0,0,100,0),
 (@PATH,4,-6093.382,374.979,395.597,0,0,0,0,100,0),
@@ -249,17 +248,40 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,14,-6174.323,376.123,398.238,0,0,0,0,100,0),
 (@PATH,15,-6174.227,376.227,398.149,0,0,0,0,100,0),
 (@PATH,16,-6178.788,365.716,398.695,0,0,0,0,100,0),
-(@PATH,17,-6176.249,371.865,398.726,0,0,0,0,100,0),
-(@PATH,18,-6168.106,383.946,398.869,0,0,0,0,100,0),
-(@PATH,19,-6155.151,384.320,395.597,0,0,0,0,100,0),
-(@PATH,20,-6130.428,383.783,395.597,0,0,0,0,100,0),
-(@PATH,21,-6129.713,375.099,395.597,0,0,0,0,100,0),
-(@PATH,22,-6129.787,376.002,395.597,0,0,0,0,100,0),
-(@PATH,23,-6104.917,375.059,395.597,0,0,0,0,100,0);
+(@PATH,17,-6178.788,365.716,398.695,0,0,0,0,100,0),
+(@PATH,18,-6176.249,371.865,398.726,0,0,0,0,100,0),
+(@PATH,19,-6168.106,383.946,398.869,0,0,0,0,100,0),
+(@PATH,20,-6155.151,384.320,395.597,0,0,0,0,100,0),
+(@PATH,21,-6130.428,383.783,395.597,0,0,0,0,100,0),
+(@PATH,22,-6129.713,375.099,395.597,0,0,0,0,100,0),
+(@PATH,23,-6129.787,376.002,395.597,0,0,0,0,100,0),
+(@PATH,24,-6117.872,375.622,395.597,0,0,0,0,100,0),
+(@PATH,25,-6099.723,375.894,395.597,0,0,0,0,100,0),
+(@PATH,26,-6099.202,377.140,395.597,0,7636,0,0,100,0),
+(@PATH,27,-6093.382,374.979,395.597,0,0,0,0,100,0),
+(@PATH,28,-6087.973,379.673,395.597,0,0,0,0,100,0),
+(@PATH,29,-6088.800,388.061,395.597,0,0,0,0,100,0),
+(@PATH,30,-6094.015,395.521,395.597,0,0,0,0,100,0),
+(@PATH,31,-6101.135,395.008,395.597,0,0,0,0,100,0),
+(@PATH,32,-6115.752,393.525,395.597,0,0,0,0,100,0),
+(@PATH,33,-6127.311,392.842,395.597,0,0,0,0,100,0),
+(@PATH,34,-6130.358,383.459,395.597,0,0,0,0,100,0),
+(@PATH,35,-6155.236,383.909,395.597,0,0,0,0,100,0),
+(@PATH,36,-6167.644,383.766,398.919,0,0,0,0,100,0),
+(@PATH,37,-6174.323,376.123,398.238,0,0,0,0,100,0),
+(@PATH,38,-6174.227,376.227,398.149,0,0,0,0,100,0),
+(@PATH,39,-6178.788,365.716,398.695,0,0,0,0,100,0),
+(@PATH,40,-6178.788,365.716,398.695,0,0,0,0,100,0),
+(@PATH,41,-6176.249,371.865,398.726,0,0,0,0,100,0),
+(@PATH,42,-6168.106,383.946,398.869,0,0,0,0,100,0),
+(@PATH,43,-6155.151,384.320,395.597,0,0,0,0,100,0),
+(@PATH,44,-6130.428,383.783,395.597,0,0,0,0,100,0),
+(@PATH,45,-6129.713,375.099,395.597,0,0,0,0,100,0),
+(@PATH,46,-6129.787,376.002,395.597,0,0,0,0,100,0);
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 92324011
 --   matched guid 167012 at 0.002 yd from a route node (next candidate 1.9 yd)
---   25 waypoints, circuit, walk (2.34 yd/s), 2 node(s) with a delay
+--   25 waypoints, circuit via gap-free lap, walk (2.34 yd/s), 2 node(s) with a delay
 SET @NPC := 167012;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -267,37 +289,35 @@ INSERT INTO `creature_addon` (`guid`,`path_id`,`mount`,`StandState`,`AnimTier`,`
 (@NPC,@PATH,0,0,0,0,1,0,0,0,0,0,0,NULL);
 DELETE FROM `waypoint_data` WHERE `id`=@PATH;
 INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`,`orientation`,`delay`,`move_type`,`action`,`action_chance`,`wpguid`) VALUES
-(@PATH,1,-6067.972,393.330,392.800,0,0,0,0,100,0),
-(@PATH,2,-6067.628,390.549,392.876,0,0,0,0,100,0),
-(@PATH,3,-6070.247,385.453,393.718,0,0,0,0,100,0),
-(@PATH,4,-6072.054,382.976,393.742,0,0,0,0,100,0),
-(@PATH,5,-6074.472,382.807,393.597,0,0,0,0,100,0),
-(@PATH,6,-6076.022,385.981,393.597,0,0,0,0,100,0),
-(@PATH,7,-6078.624,381.453,393.597,0,0,0,0,100,0),
-(@PATH,8,-6077.719,378.448,393.630,0,0,0,0,100,0),
-(@PATH,9,-6080.438,375.686,393.597,0,0,0,0,100,0),
-(@PATH,10,-6088.111,368.946,395.609,0,0,0,0,100,0),
-(@PATH,11,-6095.624,368.960,395.620,0,0,0,0,100,0),
-(@PATH,12,-6098.979,365.108,395.597,0,0,0,0,100,0),
-(@PATH,13,-6102.101,363.615,395.597,0,19476,0,0,100,0),
-(@PATH,14,-6097.103,366.309,395.597,0,0,0,0,100,0),
-(@PATH,15,-6098.622,365.490,395.597,0,0,0,0,100,0),
-(@PATH,16,-6081.212,374.755,394.027,0,0,0,0,100,0),
-(@PATH,17,-6075.092,382.682,393.597,0,0,0,0,100,0),
-(@PATH,18,-6070.757,382.821,393.650,0,0,0,0,100,0),
-(@PATH,19,-6066.912,389.326,393.537,0,0,0,0,100,0),
-(@PATH,20,-6067.550,394.507,392.800,0,0,0,0,100,0),
-(@PATH,21,-6067.019,399.549,392.792,0,0,0,0,100,0),
-(@PATH,22,-6064.043,399.736,392.850,0,0,0,0,100,0),
-(@PATH,23,-6057.679,398.434,392.801,0,13120,0,0,100,0),
-(@PATH,24,-6064.630,399.957,392.869,0,0,0,0,100,0),
-(@PATH,25,-6067.635,399.628,392.795,0,0,0,0,100,0);
+(@PATH,1,-6076.022,385.981,393.597,0,0,0,0,100,0),
+(@PATH,2,-6078.624,381.453,393.597,0,0,0,0,100,0),
+(@PATH,3,-6077.719,378.448,393.630,0,0,0,0,100,0),
+(@PATH,4,-6080.438,375.686,393.597,0,0,0,0,100,0),
+(@PATH,5,-6088.111,368.946,395.609,0,0,0,0,100,0),
+(@PATH,6,-6095.624,368.960,395.620,0,0,0,0,100,0),
+(@PATH,7,-6098.979,365.108,395.597,0,0,0,0,100,0),
+(@PATH,8,-6102.101,363.615,395.597,0,19476,0,0,100,0),
+(@PATH,9,-6097.103,366.309,395.597,0,0,0,0,100,0),
+(@PATH,10,-6098.622,365.490,395.597,0,0,0,0,100,0),
+(@PATH,11,-6081.212,374.755,394.027,0,0,0,0,100,0),
+(@PATH,12,-6075.092,382.682,393.597,0,0,0,0,100,0),
+(@PATH,13,-6070.757,382.821,393.650,0,0,0,0,100,0),
+(@PATH,14,-6066.912,389.326,393.537,0,0,0,0,100,0),
+(@PATH,15,-6067.550,394.507,392.800,0,0,0,0,100,0),
+(@PATH,16,-6067.019,399.549,392.792,0,0,0,0,100,0),
+(@PATH,17,-6064.043,399.736,392.850,0,0,0,0,100,0),
+(@PATH,18,-6057.679,398.434,392.801,0,13120,0,0,100,0),
+(@PATH,19,-6064.630,399.957,392.869,0,0,0,0,100,0),
+(@PATH,20,-6067.635,399.628,392.795,0,0,0,0,100,0),
+(@PATH,21,-6067.972,393.330,392.800,0,0,0,0,100,0),
+(@PATH,22,-6067.628,390.549,392.876,0,0,0,0,100,0),
+(@PATH,23,-6070.247,385.453,393.718,0,0,0,0,100,0),
+(@PATH,24,-6072.054,382.976,393.742,0,0,0,0,100,0),
+(@PATH,25,-6074.472,382.807,393.597,0,0,0,0,100,0);
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 33603751
 --   matched guid 167026 at 6.166 yd from a route node (next candidate 13.9 yd)
---   7 waypoints, circuit, walk (2.49 yd/s), 1 node(s) with a delay, 4 unlinked node(s) dropped
---   WARNING: longest leg is 45 yd -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
---   WARNING: spawn point sits 7 yd off the path -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
+--   11 waypoints, back-and-forth over 10 nodes via gap-free lap, walk (2.49 yd/s), 1 node(s) with a delay, 1 unlinked node(s) dropped
 SET @NPC := 167026;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -305,18 +325,21 @@ INSERT INTO `creature_addon` (`guid`,`path_id`,`mount`,`StandState`,`AnimTier`,`
 (@NPC,@PATH,0,0,0,0,1,0,0,0,0,0,0,NULL);
 DELETE FROM `waypoint_data` WHERE `id`=@PATH;
 INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`,`orientation`,`delay`,`move_type`,`action`,`action_chance`,`wpguid`) VALUES
-(@PATH,1,-6232.762,338.974,383.238,0,0,0,0,100,0),
-(@PATH,2,-6225.120,345.355,383.451,0,1175,0,0,100,0),
-(@PATH,3,-6218.737,364.024,385.571,0,0,0,0,100,0),
-(@PATH,4,-6213.269,373.000,387.177,0,0,0,0,100,0),
-(@PATH,5,-6199.655,378.702,390.182,0,0,0,0,100,0),
-(@PATH,6,-6184.346,382.753,394.600,0,0,0,0,100,0),
-(@PATH,7,-6221.236,358.794,384.928,0,0,0,0,100,0);
+(@PATH,1,-6218.737,364.024,385.571,0,0,0,0,100,0),
+(@PATH,2,-6213.269,373.000,387.177,0,0,0,0,100,0),
+(@PATH,3,-6199.655,378.702,390.182,0,0,0,0,100,0),
+(@PATH,4,-6184.346,382.753,394.600,0,0,0,0,100,0),
+(@PATH,5,-6181.535,384.817,395.536,0,0,0,0,100,0),
+(@PATH,6,-6187.376,381.038,393.550,0,0,0,0,100,0),
+(@PATH,7,-6210.335,374.399,387.752,0,0,0,0,100,0),
+(@PATH,8,-6221.236,358.794,384.928,0,0,0,0,100,0),
+(@PATH,9,-6225.120,345.355,383.451,0,1175,0,0,100,0),
+(@PATH,10,-6232.762,338.974,383.238,0,0,0,0,100,0),
+(@PATH,11,-6225.120,345.355,383.451,0,1175,0,0,100,0);
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 16826539
 --   matched guid 167038 at 0.000 yd from a route node (next candidate 0.8 yd)
---   14 waypoints, circuit, walk (2.24 yd/s), 0 node(s) with a delay, 17 unlinked node(s) dropped
---   WARNING: longest leg is 32 yd -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
+--   47 waypoints, back-and-forth over 31 nodes via lap spanning a gap, walk (2.24 yd/s), 0 node(s) with a delay
 SET @NPC := 167038;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -337,11 +360,44 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,11,-6052.295,370.102,395.458,0,0,0,0,100,0),
 (@PATH,12,-6052.057,373.281,395.644,0,0,0,0,100,0),
 (@PATH,13,-6052.272,378.208,398.800,0,0,0,0,100,0),
-(@PATH,14,-6052.104,380.988,398.988,0,0,0,0,100,0);
+(@PATH,14,-6052.104,380.988,398.988,0,0,0,0,100,0),
+(@PATH,15,-6052.057,373.281,395.644,0,0,0,0,100,0),
+(@PATH,16,-6052.295,370.102,395.458,0,0,0,0,100,0),
+(@PATH,17,-6055.415,370.240,395.200,0,0,0,0,100,0),
+(@PATH,18,-6057.311,370.153,394.122,0,0,0,0,100,0),
+(@PATH,19,-6061.054,370.405,393.597,0,0,0,0,100,0),
+(@PATH,20,-6058.500,370.233,393.707,0,0,0,0,100,0),
+(@PATH,21,-6061.660,393.167,392.800,0,0,0,0,100,0),
+(@PATH,22,-6068.019,393.368,392.800,0,0,0,0,100,0),
+(@PATH,23,-6067.913,390.681,392.800,0,0,0,0,100,0),
+(@PATH,24,-6067.812,389.477,393.559,0,0,0,0,100,0),
+(@PATH,25,-6068.399,383.965,393.623,0,0,0,0,100,0),
+(@PATH,26,-6079.957,383.828,393.597,0,0,0,0,100,0),
+(@PATH,27,-6081.066,392.474,393.588,0,0,0,0,100,0),
+(@PATH,28,-6088.337,399.752,395.597,0,0,0,0,100,0),
+(@PATH,29,-6096.200,397.608,395.597,0,0,0,0,100,0),
+(@PATH,30,-6091.116,392.281,395.597,0,0,0,0,100,0),
+(@PATH,31,-6087.005,383.484,395.597,0,0,0,0,100,0),
+(@PATH,32,-6090.012,377.354,395.597,0,0,0,0,100,0),
+(@PATH,33,-6097.653,368.788,395.597,0,0,0,0,100,0),
+(@PATH,34,-6109.990,372.745,395.716,0,0,0,0,100,0),
+(@PATH,35,-6120.653,375.186,395.597,0,0,0,0,100,0),
+(@PATH,36,-6130.132,383.755,395.597,0,0,0,0,100,0),
+(@PATH,37,-6140.628,384.170,395.597,0,0,0,0,100,0),
+(@PATH,38,-6130.132,383.755,395.597,0,0,0,0,100,0),
+(@PATH,39,-6129.929,375.748,395.597,0,0,0,0,100,0),
+(@PATH,40,-6120.653,375.186,395.597,0,0,0,0,100,0),
+(@PATH,41,-6110.118,372.786,395.689,0,0,0,0,100,0),
+(@PATH,42,-6097.653,368.788,395.597,0,0,0,0,100,0),
+(@PATH,43,-6090.012,377.354,395.597,0,0,0,0,100,0),
+(@PATH,44,-6087.005,383.484,395.597,0,0,0,0,100,0),
+(@PATH,45,-6091.116,392.281,395.597,0,0,0,0,100,0),
+(@PATH,46,-6096.200,397.608,395.597,0,0,0,0,100,0),
+(@PATH,47,-6088.337,399.752,395.597,0,0,0,0,100,0);
 
 -- Rockjaw Goon (entry 37073) -- retail spawn 159459
 --   matched guid 167220 at 0.003 yd from a route node (next candidate 4.4 yd)
---   28 waypoints, out-and-back round trip over 15 nodes, run (5.95 yd/s), 0 node(s) with a delay
+--   28 waypoints, back-and-forth over 15 nodes via spanning-tree line, run (5.95 yd/s), 0 node(s) with a delay
 SET @NPC := 167220;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -378,4 +434,4 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,27,-6303.198,447.109,385.710,0,0,1,0,100,0),
 (@PATH,28,-6287.556,449.660,385.665,0,0,1,0,100,0);
 
--- 9 paths, 137 waypoint rows total
+-- 9 paths, 197 waypoint rows total

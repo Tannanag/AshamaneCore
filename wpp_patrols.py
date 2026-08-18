@@ -262,30 +262,69 @@ def full_order(rt):
     return list(rt['order'])
 
 
+def observed_laps(rt, moves):
+    """Every stretch of the sniff that runs from a node back to that same node.
+
+    One such stretch is a lap, in the order the NPC actually walked it, which
+    settles the question no amount of graph reasoning does cleanly: whether the
+    route is a circuit (A B C A) or a back-and-forth (A B C B A). Both fall out
+    of the observed sequence for free -- the second simply lists its middle
+    nodes twice.
+
+    Each lap is returned with whether it is gap-free. A lap spanning a gap
+    event has the NPC moving unobserved somewhere in the middle, so the two
+    nodes either side of the hole end up adjacent in the emitted path and the
+    core straight-lines between them.
+    """
+    nodes = rt['nodes']
+    idx = {k: i for i, k in enumerate(nodes)}
+    d = [m for m in moves if m['duration'] > 0 and m['dist'] > 0.5]
+    ent = [(idx[m['dest']], m) for m in d if m['dest'] in idx]
+    if not ent:
+        return []
+    seq = [e[0] for e in ent]
+    mv = [e[1] for e in ent]
+    gap = [False] * len(ent)
+    for k in range(len(ent) - 1):
+        a, b = mv[k], mv[k + 1]
+        slack = (b['ts'] - a['ts']).total_seconds() - a['duration'] / 1000.0
+        if math.dist(a['dest'], b['origin']) > 3 and slack > 2:
+            gap[k] = True
+    pos = collections.defaultdict(list)
+    for k, i in enumerate(seq):
+        pos[i].append(k)
+    out = []
+    for ks in pos.values():
+        for a, b in zip(ks, ks[1:]):
+            if b - a >= 3:
+                out.append((seq[a:b], not any(gap[a:b])))
+    return out
+
+
+def max_leg(nodes, order):
+    pts = [nodes[i] for i in order]
+    return max(math.dist(pts[k], pts[(k + 1) % len(pts)])
+               for k in range(len(pts)))
+
+
 def linear_chain(rt, moves):
-    """Recover an out-and-back route as an explicit round trip, or None.
+    """A route that patrols a line, returned as its full round trip, or None.
 
-    A greedy successor walk cannot represent a route that reverses at its ends:
-    it stops the moment an edge leads back to a node it already emitted, which
-    on the Rockjaw Goon's route meant 7 nodes out of 15 and an 87 yd jump to
-    close them. Period detection is meant to cover this case but needs a clean
-    lap count to lock on, and gaps depress the score below its own bar.
+    Useful when no single gap-free lap was ever captured end to end but the
+    individual legs were all seen at one time or another. The maximum spanning
+    tree over observed transitions is the line itself, every node of degree 2
+    except the two ends.
 
-    So work from the shape of the route instead. Take the maximum spanning tree
-    over observed transitions: when the NPC patrols a line, that tree *is* the
-    line, every node of degree 2 except the two ends. Two things then separate
-    a line from a circuit, which spans to a path just as readily:
+    Two things separate a line from a circuit, which spans to a path just as
+    readily: a circuit is observed closing, where a line's ends may be hundreds
+    of yards apart and never adjacent; and a line's ends are visited about half
+    as often as its middle, because each lap passes through the middle twice
+    and touches each end once.
 
-      * a circuit is observed closing -- there is a transition between the two
-        ends -- while a line's ends are 200 yd apart and never adjacent;
-      * a line's ends are visited about half as often as its middle, because
-        each lap passes through the middle twice and touches each end once.
-
-    Returns the full round trip, out along the chain and back through its
-    interior, because WaypointMovementGenerator cycles a path rather than
-    ping-ponging it: `i_currentNode = (i_currentNode+1) % i_path->size()`.
-    Emitting only the one-way chain would make the NPC teleport-walk from the
-    far end back to the start on every lap.
+    The round trip runs out along the chain and back through its interior,
+    because WaypointMovementGenerator cycles a path rather than ping-ponging
+    it: `i_currentNode = (i_currentNode+1) % i_path->size()`. A one-way chain
+    would teleport-walk the NPC from the far end back to the start every lap.
     """
     nodes = rt['nodes']
     idx = {k: i for i, k in enumerate(nodes)}
@@ -326,21 +365,44 @@ def linear_chain(rt, moves):
     if len(chain) != len(nodes):
         return None
 
-    # observed closing the loop -> a circuit, which the successor walk already
-    # handles correctly; leave it alone
     if w.get(frozenset((chain[0], chain[-1])), 0):
-        return None
-    # ends touched once a lap against twice for the middle
+        return None                       # observed closing: a circuit
     ev = (rt['visits'][nodes[chain[0]]] + rt['visits'][nodes[chain[-1]]]) / 2
     mid = chain[1:-1]
     mv = sum(rt['visits'][nodes[i]] for i in mid) / len(mid) if mid else 0
-    if not mv or ev / mv > 0.8:
-        return None
-    # a couple of laps at each end before believing a reversal
-    if ev < MIN_END_VISITS:
+    if not mv or ev / mv > 0.8 or ev < MIN_END_VISITS:
         return None
 
     return chain + chain[-2:0:-1]
+
+
+def recover_order(rt, moves):
+    """The waypoint order to emit, and how it was arrived at.
+
+    Every candidate is a real observation of the route: a lap the NPC was seen
+    walking end to end, the spanning tree of its legs, or the successor walk.
+    They are filtered on geometry first -- a candidate whose longest leg is
+    implausible is missing a stretch, whatever produced it -- and then ranked by
+    how much of the route they cover, preferring gap-free evidence and, between
+    equals, the shortest.
+
+    Coverage is ranked above gap-free deliberately, but only among candidates
+    that already pass the geometry filter, so a lap that reaches one extra node
+    by straight-lining 56 yd across a hole never wins.
+    """
+    nodes = rt['nodes']
+    cands = [(w, c, "gap-free lap" if c else "lap spanning a gap")
+             for w, c in observed_laps(rt, moves)]
+    line = linear_chain(rt, moves)
+    if line:
+        cands.append((line, True, "spanning-tree line"))
+
+    ok = [(w, c, h) for w, c, h in cands if max_leg(nodes, w) <= LEG_SANITY]
+    if ok:
+        w, c, h = max(ok, key=lambda t: (len(set(t[0])), t[1],
+                                         -len(t[0]), -max_leg(nodes, t[0])))
+        return w, h
+    return full_order(rt), "successor walk"
 
 
 def match_spawn(rt, order, spawns, entry):
@@ -433,8 +495,7 @@ def emit_sql(picked, by_spawn, player_at):
     for x in picked:
         v = by_spawn[(x['entry'], x['counter'])]
         rt = route(v)
-        roundtrip = linear_chain(rt, v)
-        order = roundtrip if roundtrip else full_order(rt)
+        order, how = recover_order(rt, v)
         s, d, runner_up = match_spawn(rt, order, spawns, x['entry'])
         guid = s['guid']
         # two routes landing on one guid means the pairing is wrong, and the
@@ -458,22 +519,28 @@ def emit_sql(picked, by_spawn, player_at):
         spawn_off = min(math.dist(s['pos'][:2], p[:2]) for p in pts)
         warn = []
         if max(legs) > LEG_SANITY:
-            warn.append(f"longest leg is {max(legs):.0f} yd")
-        if spawn_off > 5.0:
-            warn.append(f"spawn point sits {spawn_off:.0f} yd off the path")
+            warn.append(f"longest leg is {max(legs):.0f} yd -- a stretch of this "
+                        f"route was never observed, and the core will straight-line it")
+        # Only a complaint if the emitted subset lost the node the spawn stands
+        # on. When it is no further off than the pairing already was, that is
+        # the inexact match talking, not a hole in the route.
+        if spawn_off > d + 1.0:
+            warn.append(f"spawn point sits {spawn_off:.0f} yd off the path, though "
+                        f"it matched a node at {d:.1f} yd -- the emitted order "
+                        f"dropped the node it stands on")
 
         print(f"-- {x['name']} (entry {x['entry']}) -- retail spawn {x['counter']}")
         rival = (f"next candidate {runner_up:.1f} yd" if runner_up < float('inf')
                  else "the only spawn of this entry in the box")
         print(f"--   matched guid {guid} at {d:.3f} yd from a route node ({rival})")
-        shape = ("out-and-back round trip over %d nodes" % len(set(order))
-                 if roundtrip else "circuit")
-        print(f"--   {len(order)} waypoints, {shape}, {'run' if mt else 'walk'} "
+        shape = ("back-and-forth over %d nodes" % len(set(order))
+                 if len(order) != len(set(order)) else "circuit")
+        print(f"--   {len(order)} waypoints, {shape} via {how}, "
+              f"{'run' if mt else 'walk'} "
               f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay"
               + (f", {dropped} unlinked node(s) dropped" if dropped else ""))
         for w in warn:
-            print(f"--   WARNING: {w} -- the dropped nodes probably carried the "
-                  f"route between two ends, leaving a stub rather than a circuit")
+            print(f"--   WARNING: {w}")
         print(f"SET @NPC := {guid};  SET @PATH := @NPC * 10;")
         print("UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;")
         print("DELETE FROM `creature_addon` WHERE `guid`=@NPC;")

@@ -91,6 +91,54 @@ def _periodic(seq):
     return lap, best_score
 
 
+MERGE_TOL = 0.5   # yd; closer than this and it is one waypoint, not two
+
+
+def _merge_nodes(nodes, cnt):
+    """Collapse coordinates that are really the same waypoint.
+
+    A stored waypoint does not always replay as the same float32. Approached
+    from opposite directions it comes back a few centimetres off -- 0.09 yd on
+    Citizen 167038's route -- and that splits one waypoint into two nodes. Each
+    then carries half the visits, and the emitted lap stops at one of the pair
+    on the way out and the other on the way back, so the route looks like it is
+    missing a point exactly where two markers sit on top of each other.
+
+    Cluster within MERGE_TOL and keep the best-attested coordinate of each
+    cluster. Genuine waypoints are never half a yard apart.
+
+    Returns the canonical nodes and a map from every observed destination -- the
+    jittered spellings included, and the single-visit ones `route` would
+    otherwise discard -- to its node index.
+    """
+    par = list(range(len(nodes)))
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]; x = par[x]
+        return x
+    for i in range(len(nodes)):
+        for j in range(i + 1, len(nodes)):
+            if math.dist(nodes[i], nodes[j]) <= MERGE_TOL:
+                par[find(i)] = find(j)
+
+    groups = collections.defaultdict(list)
+    for i in range(len(nodes)):
+        groups[find(i)].append(i)
+    canonical = [max((nodes[i] for i in g), key=lambda p: cnt[p])
+                 for g in groups.values()]
+
+    canon = {}
+    for p in cnt:
+        best, bd = None, MERGE_TOL
+        for i, q in enumerate(canonical):
+            dd = math.dist(p, q)
+            if dd <= bd:
+                best, bd = i, dd
+        if best is not None:
+            canon[p] = best
+    return canonical, canon
+
+
 def route(moves):
     """Ordered patrol route recovered from repeated destination coordinates.
 
@@ -129,8 +177,8 @@ def route(moves):
         cand.sort(reverse=True)
         nodes.extend(p for _, p in cand[:2])
 
-    idx = {k: i for i, k in enumerate(nodes)}
-    seq = [idx[m['dest']] for m in d if m['dest'] in idx]
+    nodes, canon = _merge_nodes(nodes, cnt)
+    seq = [canon[m['dest']] for m in d if m['dest'] in canon]
 
     succ = collections.defaultdict(collections.Counter)
     for a, b in zip(seq, seq[1:]):
@@ -146,7 +194,7 @@ def route(moves):
     # fragment of the same route rather than as loose nodes.
     def fragments(used):
         frags = []
-        left = set(idx.values()) - set(used)
+        left = set(range(len(nodes))) - set(used)
         while left:
             sub = collections.defaultdict(collections.Counter)
             for a in succ:
@@ -173,7 +221,8 @@ def route(moves):
         conf[a] = succ[a].most_common(1)[0][1] / tot
 
     return dict(nodes=nodes, order=order, closed=closed, visits=cnt, method=method,
-                conf=conf, orphans=[i for i in idx.values() if i not in set(order)],
+                canon=canon,
+                conf=conf, orphans=[i for i in range(len(nodes)) if i not in set(order)],
                 frags=fragments(order), seq_len=len(seq))
 
 
@@ -276,10 +325,9 @@ def observed_laps(rt, moves):
     nodes either side of the hole end up adjacent in the emitted path and the
     core straight-lines between them.
     """
-    nodes = rt['nodes']
-    idx = {k: i for i, k in enumerate(nodes)}
+    canon = rt['canon']
     d = [m for m in moves if m['duration'] > 0 and m['dist'] > 0.5]
-    ent = [(idx[m['dest']], m) for m in d if m['dest'] in idx]
+    ent = [(canon[m['dest']], m) for m in d if m['dest'] in canon]
     if not ent:
         return []
     seq = [e[0] for e in ent]
@@ -327,9 +375,9 @@ def linear_chain(rt, moves):
     would teleport-walk the NPC from the far end back to the start every lap.
     """
     nodes = rt['nodes']
-    idx = {k: i for i, k in enumerate(nodes)}
+    canon = rt['canon']
     d = [m for m in moves if m['duration'] > 0 and m['dist'] > 0.5]
-    seq = [idx[m['dest']] for m in d if m['dest'] in idx]
+    seq = [canon[m['dest']] for m in d if m['dest'] in canon]
     w = collections.Counter()
     for a, b in zip(seq, seq[1:]):
         if a != b:
@@ -463,7 +511,7 @@ def node_delays(moves, rt, order, player_at):
     MIN_DWELL_SAMPLES surviving observations is reported as no delay rather
     than on the strength of one or two readings that disagree by minutes.
     """
-    idx = {k: i for i, k in enumerate(rt['nodes'])}
+    idx = rt['canon']
     dw = collections.defaultdict(list)
     for a, b in zip(moves, moves[1:]):
         if a['dest'] not in idx or a['duration'] <= 0:

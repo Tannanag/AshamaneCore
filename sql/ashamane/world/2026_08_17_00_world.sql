@@ -1,17 +1,17 @@
 -- Coldridge Valley: give nine spawns their retail patrol routes.
 --
 -- All nine stand still today (`MovementType` = 0, `wander_distance` = 0) on
--- spots where retail walks them a fixed route. 9 paths, 197 waypoints:
+-- spots where retail walks them a fixed route. 9 paths, 198 waypoints:
 --
 --   entry  NPC                     guid    path     rows  nodes  speed  shape
 --     658  Sten Stoutarm         167020   1670200     3      3   walk   circuit
 --   37087  Jona Ironstock        166999   1669990    12     12   walk   circuit
 --     853  Coldridge Mountaineer 166975   1669750    15     15   walk   circuit
---     853  Coldridge Mountaineer 166972   1669720    46     23   walk   back-and-forth
+--     853  Coldridge Mountaineer 166972   1669720    46     19   walk   back-and-forth
 --     853  Coldridge Mountaineer 167026   1670260    11     10   walk   back-and-forth
---   37218  Coldridge Citizen     167017   1670170    10     10   walk   circuit
+--   37218  Coldridge Citizen     167017   1670170     9      8   walk   back-and-forth
 --   37218  Coldridge Citizen     167012   1670120    25     25   walk   circuit
---   37218  Coldridge Citizen     167038   1670380    47     31   walk   back-and-forth
+--   37218  Coldridge Citizen     167038   1670380    49     27   walk   back-and-forth
 --   37073  Rockjaw Goon          167220   1672200    28     15   RUN    back-and-forth
 --
 -- Where the coordinates come from
@@ -60,6 +60,28 @@
 -- leg over 24.9 yards, so one that does is missing a stretch whatever produced
 -- it. Two nodes were dropped this way across all nine routes, one each from
 -- 167017 and 167026, both reachable only across a 56 yard hole.
+--
+-- One waypoint, one node
+--
+-- A stored waypoint does not always replay as the same float32. Approached from
+-- opposite directions it comes back a few centimetres off -- 0.09 yd between the
+-- two spellings of one node on 167038 -- and taken literally that splits a single
+-- waypoint into two nodes, each carrying half the visits. The emitted lap then
+-- stops at one of the pair on the way out and the other on the way back, so the
+-- route reads as though it is missing a point at exactly the spot where two
+-- markers sit on top of each other.
+--
+-- Destinations within half a yard are therefore treated as one waypoint, keeping
+-- the best-attested spelling. Real waypoints are never that close: after merging,
+-- the nearest two distinct nodes on any of these routes are 0.52 yd apart. This
+-- also readmits the single-visit spellings that the "seen more than once" rule
+-- would otherwise discard as wander noise.
+--
+-- It matters most on 167038, which had four such pairs. Folding them turns its
+-- 31 nodes into 27 real waypoints and, with the visits no longer split, a
+-- gap-free lap covers the whole route for the first time -- longest leg 19.4 yd
+-- against 23.2, closing leg 5.9 against 10.4. 166972 loses four the same way
+-- (23 nodes to 19) and 167017 two.
 --
 -- Why these guids and not others
 --
@@ -118,7 +140,14 @@
 -- * All nine spawns confirmed still at `MovementType` = 0 and the coordinates
 --   above before writing.
 -- * Longest leg on any of the nine routes is 24.9 yd; every spawn point but
---   167026's falls on its own path to within 0.005 yd.
+--   167026's falls on its own path to within 0.005 yd; and no two distinct nodes
+--   on any route are closer than 0.52 yd.
+-- * One node on 167038 is still visited once where its neighbours are visited
+--   twice: (-6067.91, 390.68), which sits 1.43 yd from (-6067.81, 389.48) and so
+--   overlaps it on screen. The sniff backs this up rather than contradicting it --
+--   that coordinate was a destination 3 times against its neighbour's 5 -- so it
+--   is left as observed. If it turns out in game that the NPC does stop there in
+--   both directions, the second visit belongs between points 12 and 13.
 -- * `ObjectMgr::LoadCreatureAddons` silently downgrades `MovementType` = 2 to
 --   idle when the spawn has no `creature_addon.path_id`, so the addon row is
 --   mandatory rather than optional -- hence the DELETE/INSERT pair per spawn.
@@ -139,8 +168,8 @@
 -- points are still in the packet data if a leg needs filling in.
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 25215147
---   matched guid 167017 at 0.001 yd from a route node (next candidate 5.4 yd)
---   10 waypoints, circuit via lap spanning a gap, walk (2.40 yd/s), 0 node(s) with a delay, 1 unlinked node(s) dropped
+--   matched guid 167017 at 0.001 yd from a route node (next candidate 5.5 yd)
+--   9 waypoints, back-and-forth over 8 nodes via gap-free lap, walk (2.40 yd/s), 0 node(s) with a delay, 1 unlinked node(s) dropped
 SET @NPC := 167017;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -155,9 +184,8 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,5,-6067.965,380.767,393.706,0,0,0,0,100,0),
 (@PATH,6,-6066.971,370.811,393.597,0,0,0,0,100,0),
 (@PATH,7,-6069.182,382.866,393.609,0,0,0,0,100,0),
-(@PATH,8,-6074.912,385.899,393.597,0,0,0,0,100,0),
-(@PATH,9,-6081.568,392.512,393.689,0,0,0,0,100,0),
-(@PATH,10,-6088.628,399.366,395.597,0,0,0,0,100,0);
+(@PATH,8,-6074.948,386.149,393.597,0,0,0,0,100,0),
+(@PATH,9,-6081.568,392.512,393.689,0,0,0,0,100,0);
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 49319
 --   matched guid 166975 at 0.000 yd from a route node (next candidate 3.5 yd)
@@ -224,7 +252,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 50380967
 --   matched guid 166972 at 0.005 yd from a route node (next candidate 3.7 yd)
---   46 waypoints, back-and-forth over 23 nodes via gap-free lap, walk (2.25 yd/s), 1 node(s) with a delay
+--   46 waypoints, back-and-forth over 19 nodes via gap-free lap, walk (2.25 yd/s), 1 node(s) with a delay
 SET @NPC := 166972;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -242,16 +270,16 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,8,-6101.135,395.008,395.597,0,0,0,0,100,0),
 (@PATH,9,-6115.752,393.525,395.597,0,0,0,0,100,0),
 (@PATH,10,-6127.311,392.842,395.597,0,0,0,0,100,0),
-(@PATH,11,-6130.358,383.459,395.597,0,0,0,0,100,0),
+(@PATH,11,-6130.428,383.783,395.597,0,0,0,0,100,0),
 (@PATH,12,-6155.236,383.909,395.597,0,0,0,0,100,0),
 (@PATH,13,-6167.644,383.766,398.919,0,0,0,0,100,0),
 (@PATH,14,-6174.323,376.123,398.238,0,0,0,0,100,0),
-(@PATH,15,-6174.227,376.227,398.149,0,0,0,0,100,0),
+(@PATH,15,-6174.323,376.123,398.238,0,0,0,0,100,0),
 (@PATH,16,-6178.788,365.716,398.695,0,0,0,0,100,0),
 (@PATH,17,-6178.788,365.716,398.695,0,0,0,0,100,0),
 (@PATH,18,-6176.249,371.865,398.726,0,0,0,0,100,0),
-(@PATH,19,-6168.106,383.946,398.869,0,0,0,0,100,0),
-(@PATH,20,-6155.151,384.320,395.597,0,0,0,0,100,0),
+(@PATH,19,-6167.644,383.766,398.919,0,0,0,0,100,0),
+(@PATH,20,-6155.236,383.909,395.597,0,0,0,0,100,0),
 (@PATH,21,-6130.428,383.783,395.597,0,0,0,0,100,0),
 (@PATH,22,-6129.713,375.099,395.597,0,0,0,0,100,0),
 (@PATH,23,-6129.787,376.002,395.597,0,0,0,0,100,0),
@@ -265,16 +293,16 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,31,-6101.135,395.008,395.597,0,0,0,0,100,0),
 (@PATH,32,-6115.752,393.525,395.597,0,0,0,0,100,0),
 (@PATH,33,-6127.311,392.842,395.597,0,0,0,0,100,0),
-(@PATH,34,-6130.358,383.459,395.597,0,0,0,0,100,0),
+(@PATH,34,-6130.428,383.783,395.597,0,0,0,0,100,0),
 (@PATH,35,-6155.236,383.909,395.597,0,0,0,0,100,0),
 (@PATH,36,-6167.644,383.766,398.919,0,0,0,0,100,0),
 (@PATH,37,-6174.323,376.123,398.238,0,0,0,0,100,0),
-(@PATH,38,-6174.227,376.227,398.149,0,0,0,0,100,0),
+(@PATH,38,-6174.323,376.123,398.238,0,0,0,0,100,0),
 (@PATH,39,-6178.788,365.716,398.695,0,0,0,0,100,0),
 (@PATH,40,-6178.788,365.716,398.695,0,0,0,0,100,0),
 (@PATH,41,-6176.249,371.865,398.726,0,0,0,0,100,0),
-(@PATH,42,-6168.106,383.946,398.869,0,0,0,0,100,0),
-(@PATH,43,-6155.151,384.320,395.597,0,0,0,0,100,0),
+(@PATH,42,-6167.644,383.766,398.919,0,0,0,0,100,0),
+(@PATH,43,-6155.236,383.909,395.597,0,0,0,0,100,0),
 (@PATH,44,-6130.428,383.783,395.597,0,0,0,0,100,0),
 (@PATH,45,-6129.713,375.099,395.597,0,0,0,0,100,0),
 (@PATH,46,-6129.787,376.002,395.597,0,0,0,0,100,0);
@@ -339,7 +367,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 16826539
 --   matched guid 167038 at 0.000 yd from a route node (next candidate 0.8 yd)
---   47 waypoints, back-and-forth over 31 nodes via lap spanning a gap, walk (2.24 yd/s), 0 node(s) with a delay
+--   49 waypoints, back-and-forth over 27 nodes via gap-free lap, walk (2.24 yd/s), 0 node(s) with a delay
 SET @NPC := 167038;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -347,53 +375,55 @@ INSERT INTO `creature_addon` (`guid`,`path_id`,`mount`,`StandState`,`AnimTier`,`
 (@NPC,@PATH,0,0,0,0,1,0,0,0,0,0,0,NULL);
 DELETE FROM `waypoint_data` WHERE `id`=@PATH;
 INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`,`orientation`,`delay`,`move_type`,`action`,`action_chance`,`wpguid`) VALUES
-(@PATH,1,-6081.077,392.554,393.625,0,0,0,0,100,0),
-(@PATH,2,-6079.957,383.828,393.597,0,0,0,0,100,0),
-(@PATH,3,-6068.399,383.965,393.623,0,0,0,0,100,0),
-(@PATH,4,-6067.812,389.477,393.559,0,0,0,0,100,0),
-(@PATH,5,-6068.019,393.368,392.800,0,0,0,0,100,0),
-(@PATH,6,-6061.660,393.167,392.800,0,0,0,0,100,0),
-(@PATH,7,-6061.182,373.740,393.013,0,0,0,0,100,0),
-(@PATH,8,-6061.187,373.922,392.800,0,0,0,0,100,0),
-(@PATH,9,-6057.432,370.148,394.049,0,0,0,0,100,0),
-(@PATH,10,-6055.415,370.240,395.200,0,0,0,0,100,0),
-(@PATH,11,-6052.295,370.102,395.458,0,0,0,0,100,0),
-(@PATH,12,-6052.057,373.281,395.644,0,0,0,0,100,0),
-(@PATH,13,-6052.272,378.208,398.800,0,0,0,0,100,0),
-(@PATH,14,-6052.104,380.988,398.988,0,0,0,0,100,0),
-(@PATH,15,-6052.057,373.281,395.644,0,0,0,0,100,0),
-(@PATH,16,-6052.295,370.102,395.458,0,0,0,0,100,0),
-(@PATH,17,-6055.415,370.240,395.200,0,0,0,0,100,0),
-(@PATH,18,-6057.311,370.153,394.122,0,0,0,0,100,0),
-(@PATH,19,-6061.054,370.405,393.597,0,0,0,0,100,0),
-(@PATH,20,-6058.500,370.233,393.707,0,0,0,0,100,0),
-(@PATH,21,-6061.660,393.167,392.800,0,0,0,0,100,0),
-(@PATH,22,-6068.019,393.368,392.800,0,0,0,0,100,0),
-(@PATH,23,-6067.913,390.681,392.800,0,0,0,0,100,0),
-(@PATH,24,-6067.812,389.477,393.559,0,0,0,0,100,0),
-(@PATH,25,-6068.399,383.965,393.623,0,0,0,0,100,0),
-(@PATH,26,-6079.957,383.828,393.597,0,0,0,0,100,0),
-(@PATH,27,-6081.066,392.474,393.588,0,0,0,0,100,0),
-(@PATH,28,-6088.337,399.752,395.597,0,0,0,0,100,0),
-(@PATH,29,-6096.200,397.608,395.597,0,0,0,0,100,0),
-(@PATH,30,-6091.116,392.281,395.597,0,0,0,0,100,0),
-(@PATH,31,-6087.005,383.484,395.597,0,0,0,0,100,0),
-(@PATH,32,-6090.012,377.354,395.597,0,0,0,0,100,0),
-(@PATH,33,-6097.653,368.788,395.597,0,0,0,0,100,0),
-(@PATH,34,-6109.990,372.745,395.716,0,0,0,0,100,0),
-(@PATH,35,-6120.653,375.186,395.597,0,0,0,0,100,0),
-(@PATH,36,-6130.132,383.755,395.597,0,0,0,0,100,0),
-(@PATH,37,-6140.628,384.170,395.597,0,0,0,0,100,0),
-(@PATH,38,-6130.132,383.755,395.597,0,0,0,0,100,0),
-(@PATH,39,-6129.929,375.748,395.597,0,0,0,0,100,0),
-(@PATH,40,-6120.653,375.186,395.597,0,0,0,0,100,0),
-(@PATH,41,-6110.118,372.786,395.689,0,0,0,0,100,0),
-(@PATH,42,-6097.653,368.788,395.597,0,0,0,0,100,0),
-(@PATH,43,-6090.012,377.354,395.597,0,0,0,0,100,0),
-(@PATH,44,-6087.005,383.484,395.597,0,0,0,0,100,0),
-(@PATH,45,-6091.116,392.281,395.597,0,0,0,0,100,0),
-(@PATH,46,-6096.200,397.608,395.597,0,0,0,0,100,0),
-(@PATH,47,-6088.337,399.752,395.597,0,0,0,0,100,0);
+(@PATH,1,-6052.272,378.208,398.800,0,0,0,0,100,0),
+(@PATH,2,-6052.104,380.988,398.988,0,0,0,0,100,0),
+(@PATH,3,-6052.057,373.281,395.644,0,0,0,0,100,0),
+(@PATH,4,-6052.295,370.102,395.458,0,0,0,0,100,0),
+(@PATH,5,-6055.415,370.240,395.200,0,0,0,0,100,0),
+(@PATH,6,-6057.432,370.148,394.049,0,0,0,0,100,0),
+(@PATH,7,-6061.054,370.405,393.597,0,0,0,0,100,0),
+(@PATH,8,-6058.500,370.233,393.707,0,0,0,0,100,0),
+(@PATH,9,-6061.182,373.740,393.013,0,0,0,0,100,0),
+(@PATH,10,-6061.660,393.167,392.800,0,0,0,0,100,0),
+(@PATH,11,-6068.019,393.368,392.800,0,0,0,0,100,0),
+(@PATH,12,-6067.913,390.681,392.800,0,0,0,0,100,0),
+(@PATH,13,-6067.812,389.477,393.559,0,0,0,0,100,0),
+(@PATH,14,-6068.399,383.965,393.623,0,0,0,0,100,0),
+(@PATH,15,-6079.957,383.828,393.597,0,0,0,0,100,0),
+(@PATH,16,-6081.066,392.474,393.588,0,0,0,0,100,0),
+(@PATH,17,-6088.337,399.752,395.597,0,0,0,0,100,0),
+(@PATH,18,-6096.200,397.608,395.597,0,0,0,0,100,0),
+(@PATH,19,-6091.116,392.281,395.597,0,0,0,0,100,0),
+(@PATH,20,-6087.005,383.484,395.597,0,0,0,0,100,0),
+(@PATH,21,-6090.012,377.354,395.597,0,0,0,0,100,0),
+(@PATH,22,-6097.653,368.788,395.597,0,0,0,0,100,0),
+(@PATH,23,-6109.990,372.745,395.716,0,0,0,0,100,0),
+(@PATH,24,-6120.653,375.186,395.597,0,0,0,0,100,0),
+(@PATH,25,-6120.653,375.186,395.597,0,0,0,0,100,0),
+(@PATH,26,-6130.132,383.755,395.597,0,0,0,0,100,0),
+(@PATH,27,-6140.628,384.170,395.597,0,0,0,0,100,0),
+(@PATH,28,-6130.132,383.755,395.597,0,0,0,0,100,0),
+(@PATH,29,-6129.929,375.748,395.597,0,0,0,0,100,0),
+(@PATH,30,-6120.653,375.186,395.597,0,0,0,0,100,0),
+(@PATH,31,-6109.990,372.745,395.716,0,0,0,0,100,0),
+(@PATH,32,-6097.653,368.788,395.597,0,0,0,0,100,0),
+(@PATH,33,-6090.012,377.354,395.597,0,0,0,0,100,0),
+(@PATH,34,-6087.005,383.484,395.597,0,0,0,0,100,0),
+(@PATH,35,-6091.116,392.281,395.597,0,0,0,0,100,0),
+(@PATH,36,-6096.200,397.608,395.597,0,0,0,0,100,0),
+(@PATH,37,-6088.337,399.752,395.597,0,0,0,0,100,0),
+(@PATH,38,-6081.066,392.474,393.588,0,0,0,0,100,0),
+(@PATH,39,-6079.957,383.828,393.597,0,0,0,0,100,0),
+(@PATH,40,-6068.399,383.965,393.623,0,0,0,0,100,0),
+(@PATH,41,-6067.812,389.477,393.559,0,0,0,0,100,0),
+(@PATH,42,-6068.019,393.368,392.800,0,0,0,0,100,0),
+(@PATH,43,-6061.660,393.167,392.800,0,0,0,0,100,0),
+(@PATH,44,-6061.182,373.740,393.013,0,0,0,0,100,0),
+(@PATH,45,-6061.182,373.740,393.013,0,0,0,0,100,0),
+(@PATH,46,-6057.432,370.148,394.049,0,0,0,0,100,0),
+(@PATH,47,-6055.415,370.240,395.200,0,0,0,0,100,0),
+(@PATH,48,-6052.295,370.102,395.458,0,0,0,0,100,0),
+(@PATH,49,-6052.057,373.281,395.644,0,0,0,0,100,0);
 
 -- Rockjaw Goon (entry 37073) -- retail spawn 159459
 --   matched guid 167220 at 0.003 yd from a route node (next candidate 4.4 yd)
@@ -434,4 +464,4 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,27,-6303.198,447.109,385.710,0,0,1,0,100,0),
 (@PATH,28,-6287.556,449.660,385.665,0,0,1,0,100,0);
 
--- 9 paths, 197 waypoint rows total
+-- 9 paths, 198 waypoint rows total

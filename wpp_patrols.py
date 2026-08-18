@@ -223,6 +223,7 @@ RUN_SPEED_CUTOFF = 4.0      # yd/s; routes land on either ~2.5 or ~6.0
 VIS_RANGE = 90.0            # yd; beyond this the sniff stops seeing the NPC
 MIN_DWELL_SAMPLES = 3
 LEG_SANITY = 30.0           # yd; sound routes here top out around 25
+MIN_END_VISITS = 3          # laps needed at a terminus to call a route out-and-back
 
 
 def load_spawns(entries, cfg=None):
@@ -259,6 +260,87 @@ def full_order(rt):
     certainly out of order.
     """
     return list(rt['order'])
+
+
+def linear_chain(rt, moves):
+    """Recover an out-and-back route as an explicit round trip, or None.
+
+    A greedy successor walk cannot represent a route that reverses at its ends:
+    it stops the moment an edge leads back to a node it already emitted, which
+    on the Rockjaw Goon's route meant 7 nodes out of 15 and an 87 yd jump to
+    close them. Period detection is meant to cover this case but needs a clean
+    lap count to lock on, and gaps depress the score below its own bar.
+
+    So work from the shape of the route instead. Take the maximum spanning tree
+    over observed transitions: when the NPC patrols a line, that tree *is* the
+    line, every node of degree 2 except the two ends. Two things then separate
+    a line from a circuit, which spans to a path just as readily:
+
+      * a circuit is observed closing -- there is a transition between the two
+        ends -- while a line's ends are 200 yd apart and never adjacent;
+      * a line's ends are visited about half as often as its middle, because
+        each lap passes through the middle twice and touches each end once.
+
+    Returns the full round trip, out along the chain and back through its
+    interior, because WaypointMovementGenerator cycles a path rather than
+    ping-ponging it: `i_currentNode = (i_currentNode+1) % i_path->size()`.
+    Emitting only the one-way chain would make the NPC teleport-walk from the
+    far end back to the start on every lap.
+    """
+    nodes = rt['nodes']
+    idx = {k: i for i, k in enumerate(nodes)}
+    d = [m for m in moves if m['duration'] > 0 and m['dist'] > 0.5]
+    seq = [idx[m['dest']] for m in d if m['dest'] in idx]
+    w = collections.Counter()
+    for a, b in zip(seq, seq[1:]):
+        if a != b:
+            w[frozenset((a, b))] += 1
+    if not w:
+        return None
+
+    parent = list(range(len(nodes)))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]; x = parent[x]
+        return x
+    adj = collections.defaultdict(list)
+    for e, _c in sorted(w.items(), key=lambda kv: -kv[1]):
+        a, b = tuple(e)
+        if find(a) != find(b):
+            parent[find(a)] = find(b)
+            adj[a].append(b); adj[b].append(a)
+
+    if any(len(adj[i]) > 2 for i in range(len(nodes))):
+        return None
+    ends = [i for i in range(len(nodes)) if len(adj[i]) == 1]
+    if len(ends) != 2:
+        return None
+
+    cur, prev, chain = ends[0], None, [ends[0]]
+    while True:
+        nxt = [x for x in adj[cur] if x != prev]
+        if not nxt:
+            break
+        prev, cur = cur, nxt[0]
+        chain.append(cur)
+    if len(chain) != len(nodes):
+        return None
+
+    # observed closing the loop -> a circuit, which the successor walk already
+    # handles correctly; leave it alone
+    if w.get(frozenset((chain[0], chain[-1])), 0):
+        return None
+    # ends touched once a lap against twice for the middle
+    ev = (rt['visits'][nodes[chain[0]]] + rt['visits'][nodes[chain[-1]]]) / 2
+    mid = chain[1:-1]
+    mv = sum(rt['visits'][nodes[i]] for i in mid) / len(mid) if mid else 0
+    if not mv or ev / mv > 0.8:
+        return None
+    # a couple of laps at each end before believing a reversal
+    if ev < MIN_END_VISITS:
+        return None
+
+    return chain + chain[-2:0:-1]
 
 
 def match_spawn(rt, order, spawns, entry):
@@ -351,7 +433,8 @@ def emit_sql(picked, by_spawn, player_at):
     for x in picked:
         v = by_spawn[(x['entry'], x['counter'])]
         rt = route(v)
-        order = full_order(rt)
+        roundtrip = linear_chain(rt, v)
+        order = roundtrip if roundtrip else full_order(rt)
         s, d, runner_up = match_spawn(rt, order, spawns, x['entry'])
         guid = s['guid']
         # two routes landing on one guid means the pairing is wrong, and the
@@ -363,7 +446,7 @@ def emit_sql(picked, by_spawn, player_at):
         mt = 1 if route_speed(v) > RUN_SPEED_CUTOFF else 0
         delays = node_delays(v, rt, order, player_at)
         nodes = rt['nodes']
-        dropped = len(rt['nodes']) - len(order)
+        dropped = len(rt['nodes']) - len(set(order))
 
         # Dropping unlinked nodes can leave a stub rather than a route: if the
         # discarded nodes carried the circuit between two ends, what remains
@@ -383,7 +466,9 @@ def emit_sql(picked, by_spawn, player_at):
         rival = (f"next candidate {runner_up:.1f} yd" if runner_up < float('inf')
                  else "the only spawn of this entry in the box")
         print(f"--   matched guid {guid} at {d:.3f} yd from a route node ({rival})")
-        print(f"--   {len(order)} nodes, {'run' if mt else 'walk'} "
+        shape = ("out-and-back round trip over %d nodes" % len(set(order))
+                 if roundtrip else "circuit")
+        print(f"--   {len(order)} waypoints, {shape}, {'run' if mt else 'walk'} "
               f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay"
               + (f", {dropped} unlinked node(s) dropped" if dropped else ""))
         for w in warn:

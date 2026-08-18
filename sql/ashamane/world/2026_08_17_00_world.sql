@@ -1,18 +1,18 @@
 -- Coldridge Valley: give nine spawns their retail patrol routes.
 --
 -- All nine stand still today (`MovementType` = 0, `wander_distance` = 0) on
--- spots where retail walks them a fixed circuit. 9 paths, 146 waypoints:
+-- spots where retail walks them a fixed circuit. 9 paths, 116 waypoints:
 --
 --   entry  NPC                     guid    path      nodes  speed
 --     658  Sten Stoutarm         167020   1670200      3    walk
 --   37087  Jona Ironstock        166999   1669990     12    walk
 --     853  Coldridge Mountaineer 166975   1669750     15    walk
 --     853  Coldridge Mountaineer 166972   1669720     23    walk
---     853  Coldridge Mountaineer 167026   1670260     11    walk
---   37218  Coldridge Citizen     167017   1670170     11    walk
+--     853  Coldridge Mountaineer 167026   1670260      7    walk    (see below)
+--   37218  Coldridge Citizen     167017   1670170     10    walk
 --   37218  Coldridge Citizen     167012   1670120     25    walk
---   37218  Coldridge Citizen     167038   1670380     31    walk
---   37073  Rockjaw Goon          167220   1672200     15    RUN
+--   37218  Coldridge Citizen     167038   1670380     14    walk
+--   37073  Rockjaw Goon          167220   1672200      7    RUN     (see below)
 --
 -- Where the coordinates come from
 --
@@ -27,6 +27,15 @@
 -- wander never repeats a coordinate exactly, which is what separates these nine
 -- from the 111 wanderers in the same sniff.
 --
+-- Only nodes joined by observed legs are emitted
+--
+-- The reconstruction also turns up nodes it cannot place: stretches whose
+-- linking legs were never seen, and one-off points that may be combat detours.
+-- Those are dropped rather than appended, because a node in the wrong position
+-- is worse than a node left out -- it makes the NPC walk its circuit and then
+-- strike out across the map to each stray point in turn. 30 nodes were dropped
+-- this way, from four of the nine routes.
+--
 -- Why these guids and not others
 --
 -- Retail spawn counters (49318, 159459, ...) are runtime GUIDs with no relation
@@ -37,19 +46,28 @@
 -- bit-for-bit one of the recovered nodes (0.000 to 0.005 yd, z within 0.03).
 -- That is decisive even where a neighbouring spawn also sits near the route --
 -- guid 167013 is 0.797 yd off 167038's path, against 167038's own 0.000.
+-- Matching considers every recovered node, including the dropped ones: where
+-- the spawn sits is a question about identity, which nodes are safe to emit is
+-- a question about ordering, and conflating the two loses the Rockjaw Goon.
 --
 -- Coldridge geometry is unchanged between 7.3.5 and 12.1.0, so the retail
 -- coordinates go in as-is: no translation, no snapping.
 --
--- Two spawns worth flagging
+-- Three spawns worth flagging
 --
--- * 167026 is the one non-exact pairing, 6.17 yd from its nearest node with the
---   next candidate at 13.9 yd. The gap is wide enough to be confident and the
---   block is included, but confirm with `.npc info` on the Mountaineer near
---   (-6183, 376) and revert just that block if it is the wrong spawn.
--- * 167017 carries `creature_addon.StandState` = 3, so it sits. Retail walks it,
---   and the rest of its addon row is defaults, so the row is rewritten with
---   StandState 0. It is the only one of the nine that had an addon row at all.
+-- * 167026 and 167220 are stubs, not circuits. Dropping their unplaceable nodes
+--   left routes whose longest leg is 45 and 87 yards respectively, and whose own
+--   spawn point is 7 and 20 yards off the path -- both signs that the discarded
+--   nodes carried the route between two ends. They are emitted so the data is
+--   not lost, but expect the Goon in particular to run one long straight line
+--   per lap. Revert those two blocks if that reads badly; the sniff needs a
+--   longer continuous follow of both before they can be done properly.
+-- * 167026 is also the one non-exact pairing, 6.17 yd from its nearest node with
+--   the next candidate at 13.9 yd. Confirm with `.npc info` on the Mountaineer
+--   near (-6183, 376).
+-- * 167017 carried `creature_addon.StandState` = 3, so it sat. Retail walks it,
+--   and the rest of its addon row was defaults, so the row is rewritten with
+--   StandState 0. It was the only one of the nine with an addon row at all.
 --
 -- How each column was derived
 --
@@ -70,12 +88,6 @@
 -- which is where every implausible figure came from (one node reads as a 20-minute
 -- pause on two disagreeing samples). A node needs three surviving samples before
 -- a median is trusted; below that it is written as no delay.
---
--- Nodes marked `-- fragment` belong to the same route but sit in a stretch whose
--- linking legs were never observed, so their order relative to the main circuit
--- is inferred rather than seen. `-- unlinked` marks a node the walk never
--- reached at all -- possibly a combat detour rather than a real waypoint. These
--- are the rows to look at first if an NPC paths somewhere odd.
 --
 -- Audit
 --
@@ -104,7 +116,7 @@
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 25215147
 --   matched guid 167017 at 0.001 yd from a route node (next candidate 5.4 yd)
---   11 nodes, walk (2.40 yd/s), 0 node(s) with a delay
+--   10 nodes, walk (2.40 yd/s), 0 node(s) with a delay, 1 unlinked node(s) dropped
 SET @NPC := 167017;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -121,8 +133,7 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,7,-6069.182,382.866,393.609,0,0,0,0,100,0),
 (@PATH,8,-6074.912,385.899,393.597,0,0,0,0,100,0),
 (@PATH,9,-6081.568,392.512,393.689,0,0,0,0,100,0),
-(@PATH,10,-6088.628,399.366,395.597,0,0,0,0,100,0),
-(@PATH,11,-6097.424,403.167,395.677,0,0,0,0,100,0);  -- unlinked
+(@PATH,10,-6088.628,399.366,395.597,0,0,0,0,100,0);
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 49319
 --   matched guid 166975 at 0.000 yd from a route node (next candidate 3.5 yd)
@@ -259,7 +270,9 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 
 -- Coldridge Mountaineer (entry 853) -- retail spawn 33603751
 --   matched guid 167026 at 6.166 yd from a route node (next candidate 13.9 yd)
---   11 nodes, walk (2.49 yd/s), 1 node(s) with a delay
+--   7 nodes, walk (2.49 yd/s), 1 node(s) with a delay, 4 unlinked node(s) dropped
+--   WARNING: longest leg is 45 yd -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
+--   WARNING: spawn point sits 7 yd off the path -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
 SET @NPC := 167026;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -273,15 +286,12 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,4,-6213.269,373.000,387.177,0,0,0,0,100,0),
 (@PATH,5,-6199.655,378.702,390.182,0,0,0,0,100,0),
 (@PATH,6,-6184.346,382.753,394.600,0,0,0,0,100,0),
-(@PATH,7,-6221.236,358.794,384.928,0,0,0,0,100,0),
-(@PATH,8,-6181.535,384.817,395.536,0,0,0,0,100,0),  -- fragment
-(@PATH,9,-6187.376,381.038,393.550,0,0,0,0,100,0),  -- fragment
-(@PATH,10,-6186.574,381.559,393.661,0,0,0,0,100,0),  -- fragment
-(@PATH,11,-6210.335,374.399,387.752,0,0,0,0,100,0);  -- unlinked
+(@PATH,7,-6221.236,358.794,384.928,0,0,0,0,100,0);
 
 -- Coldridge Citizen (entry 37218) -- retail spawn 16826539
 --   matched guid 167038 at 0.000 yd from a route node (next candidate 0.8 yd)
---   31 nodes, walk (2.24 yd/s), 0 node(s) with a delay
+--   14 nodes, walk (2.24 yd/s), 0 node(s) with a delay, 17 unlinked node(s) dropped
+--   WARNING: longest leg is 32 yd -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
 SET @NPC := 167038;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -302,28 +312,13 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,11,-6052.295,370.102,395.458,0,0,0,0,100,0),
 (@PATH,12,-6052.057,373.281,395.644,0,0,0,0,100,0),
 (@PATH,13,-6052.272,378.208,398.800,0,0,0,0,100,0),
-(@PATH,14,-6052.104,380.988,398.988,0,0,0,0,100,0),
-(@PATH,15,-6081.066,392.474,393.588,0,0,0,0,100,0),  -- fragment
-(@PATH,16,-6088.337,399.752,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,17,-6096.200,397.608,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,18,-6091.116,392.281,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,19,-6087.005,383.484,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,20,-6090.012,377.354,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,21,-6097.653,368.788,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,22,-6109.990,372.745,395.716,0,0,0,0,100,0),  -- fragment
-(@PATH,23,-6120.653,375.186,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,24,-6110.118,372.786,395.689,0,0,0,0,100,0),  -- fragment
-(@PATH,25,-6057.311,370.153,394.122,0,0,0,0,100,0),  -- fragment
-(@PATH,26,-6061.054,370.405,393.597,0,0,0,0,100,0),  -- fragment
-(@PATH,27,-6058.500,370.233,393.707,0,0,0,0,100,0),  -- fragment
-(@PATH,28,-6129.929,375.748,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,29,-6130.132,383.755,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,30,-6140.628,384.170,395.597,0,0,0,0,100,0),  -- fragment
-(@PATH,31,-6067.913,390.681,392.800,0,0,0,0,100,0);  -- unlinked
+(@PATH,14,-6052.104,380.988,398.988,0,0,0,0,100,0);
 
 -- Rockjaw Goon (entry 37073) -- retail spawn 159459
 --   matched guid 167220 at 0.003 yd from a route node (next candidate 4.4 yd)
---   15 nodes, run (5.95 yd/s), 0 node(s) with a delay
+--   7 nodes, run (5.95 yd/s), 0 node(s) with a delay, 8 unlinked node(s) dropped
+--   WARNING: longest leg is 87 yd -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
+--   WARNING: spawn point sits 20 yd off the path -- the dropped nodes probably carried the route between two ends, leaving a stub rather than a circuit
 SET @NPC := 167220;  SET @PATH := @NPC * 10;
 UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;
 DELETE FROM `creature_addon` WHERE `guid`=@NPC;
@@ -337,14 +332,6 @@ INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,`position_z`
 (@PATH,4,-6372.587,335.236,386.049,0,0,1,0,100,0),
 (@PATH,5,-6379.397,320.790,386.097,0,0,1,0,100,0),
 (@PATH,6,-6384.077,300.424,386.770,0,0,1,0,100,0),
-(@PATH,7,-6384.462,281.269,389.702,0,0,1,0,100,0),
-(@PATH,8,-6364.457,384.545,379.323,0,0,1,0,100,0),  -- fragment
-(@PATH,9,-6361.229,401.899,375.875,0,0,1,0,100,0),  -- fragment
-(@PATH,10,-6318.872,438.510,381.301,0,0,1,0,100,0),  -- fragment
-(@PATH,11,-6329.821,426.830,379.581,0,0,1,0,100,0),  -- fragment
-(@PATH,12,-6342.580,416.611,377.730,0,0,1,0,100,0),  -- fragment
-(@PATH,13,-6303.198,447.109,385.710,0,0,1,0,100,0),  -- fragment
-(@PATH,14,-6287.556,449.660,385.665,0,0,1,0,100,0),  -- fragment
-(@PATH,15,-6270.788,450.490,386.067,0,0,1,0,100,0);  -- fragment
+(@PATH,7,-6384.462,281.269,389.702,0,0,1,0,100,0);
 
--- 9 paths, 146 waypoint rows total
+-- 9 paths, 116 waypoint rows total

@@ -222,6 +222,7 @@ MATCH_TOLERANCE = 8.0
 RUN_SPEED_CUTOFF = 4.0      # yd/s; routes land on either ~2.5 or ~6.0
 VIS_RANGE = 90.0            # yd; beyond this the sniff stops seeing the NPC
 MIN_DWELL_SAMPLES = 3
+LEG_SANITY = 30.0           # yd; sound routes here top out around 25
 
 
 def load_spawns(entries, cfg=None):
@@ -247,23 +248,17 @@ def load_spawns(entries, cfg=None):
 
 
 def full_order(rt):
-    """Every recovered node, once, in the best order we can defend.
+    """The recovered route: the main successor walk, and nothing else.
 
-    The main walk first, then each disconnected fragment, then whatever is
-    still loose. Fragments are stretches of the same route whose linking legs
-    were never observed, so their internal order is sound even though their
-    placement relative to the main cycle is not.
+    Disconnected fragments and unreached nodes are deliberately dropped. They
+    are real coordinates the NPC was seen at, but the sniff never observed the
+    legs that join them to the main circuit, so their position in the route is
+    guesswork -- and appending them after the last real node makes the NPC walk
+    the circuit and then strike out across the map to each stray point in turn.
+    A shorter route that is certainly right beats a longer one that is
+    certainly out of order.
     """
-    order = list(rt['order'])
-    seen = set(order)
-    for f in rt['frags']:
-        for i in f:
-            if i not in seen:
-                seen.add(i); order.append(i)
-    for i in rt['orphans']:
-        if i not in seen:
-            seen.add(i); order.append(i)
-    return order
+    return list(rt['order'])
 
 
 def match_spawn(rt, order, spawns, entry):
@@ -272,13 +267,19 @@ def match_spawn(rt, order, spawns, entry):
     A patrolling NPC's spawn point is one of its waypoints, so exact
     coincidence identifies the spawn outright -- which proximity alone cannot,
     with three Coldridge Citizen routes whose centroids are 4 yd apart.
+
+    Matching deliberately considers every recovered node, including the ones
+    full_order() drops. Where the spawn point sits in the route is a question
+    about identity; which nodes we are willing to emit is a question about
+    ordering, and conflating the two loses the Rockjaw Goon, whose spawn point
+    was only ever observed in a fragment.
     """
     nodes = rt['nodes']
     scored = []
     for s in spawns:
         if s['entry'] != entry:
             continue
-        d = min(math.dist(s['pos'][:2], nodes[i][:2]) for i in order)
+        d = min(math.dist(s['pos'][:2], p[:2]) for p in nodes)
         scored.append((d, s))
     if not scored:
         sys.exit(f"no DB spawn of entry {entry} inside the sniffed box")
@@ -362,15 +363,32 @@ def emit_sql(picked, by_spawn, player_at):
         mt = 1 if route_speed(v) > RUN_SPEED_CUTOFF else 0
         delays = node_delays(v, rt, order, player_at)
         nodes = rt['nodes']
-        main = set(rt['order'])
-        frag = {i for f in rt['frags'] for i in f}
+        dropped = len(rt['nodes']) - len(order)
+
+        # Dropping unlinked nodes can leave a stub rather than a route: if the
+        # discarded nodes carried the circuit between two ends, what remains
+        # closes with one implausible straight line. Legs on a sound route here
+        # run to 25 yd; anything much past that, or a spawn point left off its
+        # own path, means the survivors are not the whole circuit.
+        pts = [nodes[i] for i in order]
+        legs = [math.dist(pts[k], pts[(k + 1) % len(pts)]) for k in range(len(pts))]
+        spawn_off = min(math.dist(s['pos'][:2], p[:2]) for p in pts)
+        warn = []
+        if max(legs) > LEG_SANITY:
+            warn.append(f"longest leg is {max(legs):.0f} yd")
+        if spawn_off > 5.0:
+            warn.append(f"spawn point sits {spawn_off:.0f} yd off the path")
 
         print(f"-- {x['name']} (entry {x['entry']}) -- retail spawn {x['counter']}")
         rival = (f"next candidate {runner_up:.1f} yd" if runner_up < float('inf')
                  else "the only spawn of this entry in the box")
         print(f"--   matched guid {guid} at {d:.3f} yd from a route node ({rival})")
         print(f"--   {len(order)} nodes, {'run' if mt else 'walk'} "
-              f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay")
+              f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay"
+              + (f", {dropped} unlinked node(s) dropped" if dropped else ""))
+        for w in warn:
+            print(f"--   WARNING: {w} -- the dropped nodes probably carried the "
+                  f"route between two ends, leaving a stub rather than a circuit")
         print(f"SET @NPC := {guid};  SET @PATH := @NPC * 10;")
         print("UPDATE `creature` SET `wander_distance`=0, `MovementType`=2 WHERE `guid`=@NPC;")
         print("DELETE FROM `creature_addon` WHERE `guid`=@NPC;")
@@ -382,19 +400,11 @@ def emit_sql(picked, by_spawn, player_at):
         print("INSERT INTO `waypoint_data` (`id`,`point`,`position_x`,`position_y`,"
               "`position_z`,`orientation`,`delay`,`move_type`,`action`,`action_chance`,"
               "`wpguid`) VALUES")
-        rows = []
         for k, i in enumerate(order, 1):
             p = nodes[i]
-            tag = "" if i in main else ("  -- fragment" if i in frag else "  -- unlinked")
-            rows.append(f"(@PATH,{k},{p[0]:.3f},{p[1]:.3f},{p[2]:.3f},0,"
-                        f"{delays.get(i, 0)},{mt},0,100,0){tag}")
-        for n, line in enumerate(rows):
-            sep = ";" if n == len(rows) - 1 else ","
-            if "  -- " in line:
-                body, cmt = line.split("  -- ")
-                print(f"{body}{sep}  -- {cmt}")
-            else:
-                print(f"{line}{sep}")
+            sep = ";" if k == len(order) else ","
+            print(f"(@PATH,{k},{p[0]:.3f},{p[1]:.3f},{p[2]:.3f},0,"
+                  f"{delays.get(i, 0)},{mt},0,100,0){sep}")
         print()
         total += len(order)
         blocks.append((guid, len(order)))

@@ -69,9 +69,12 @@ def snapshot(guids, tables, c, outdir):
     """Everything the forward file could overwrite, before it does."""
     os.makedirs(outdir, exist_ok=True)
     gl = ",".join(str(g) for g in guids)
+    # orientation travels with the movement columns: a file that stands an NPC
+    # still usually turns it to face something, and a revert that restored the
+    # movement but not the facing would leave the spawn half-reverted.
     state = mysql(
         "SELECT c.guid, c.id, c.MovementType, c.wander_distance, "
-        "IFNULL(a.path_id, 0) FROM creature c "
+        "IFNULL(a.path_id, 0), c.orientation FROM creature c "
         "LEFT JOIN creature_addon a ON a.guid = c.guid "
         f"WHERE c.guid IN ({gl});", c)
     missing = set(guids) - {int(r[0]) for r in state}
@@ -114,10 +117,10 @@ def write_revert(path, forward, snap, tables, guids, when):
           + ", ".join(str(g) for g in guids[:20])
           + (" ..." if len(guids) > 20 else "") + "\n\n")
 
-        w("-- creature: the movement each spawn had before\n")
-        for guid, entry, mt, wd, _pid in rows:
-            w(f"UPDATE `creature` SET `MovementType`={mt}, `wander_distance`={wd} "
-              f"WHERE `guid`={guid};  -- entry {entry}\n")
+        w("-- creature: the movement and facing each spawn had before\n")
+        for guid, entry, mt, wd, _pid, o in rows:
+            w(f"UPDATE `creature` SET `MovementType`={mt}, `wander_distance`={wd}, "
+              f"`orientation`={o} WHERE `guid`={guid};  -- entry {entry}\n")
         if "creature_addon" in tables:
             gl = ", ".join(str(g) for g in guids)
             w(f"\n-- creature_addon: {len(snap['addon'])} row(s) existed before\n")

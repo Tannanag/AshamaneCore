@@ -6,9 +6,32 @@ Works on retail dumps where WPP has no opcode definitions for the build, so
 every packet is a raw hex block. All structure below was recovered empirically
 from build 12.1.0.69299 and validated statistically -- see PACKET-DUMP-HANDOFF.md.
 
-Usage:  python3 wpp_movement.py <dump_*_parsed.txt> [--csv outdir]
+Usage:  python3 wpp_movement.py [--box=x0,x1,y0,y1[,z0,z1]] <dump_*_parsed.txt>
+        python3 wpp_movement.py --probe <dump_*_parsed.txt>   -- where is this dump?
+        python3 wpp_movement.py --stats <dump_*_parsed.txt>   -- does the decode hold?
+
+The box is a decoder input, not a filter applied afterwards: raw payloads are
+scanned for the first plausible float triple, and "plausible" means "inside the
+box". The default covers Eastern Kingdoms only. Point this at another zone or
+another map without --box and it decodes nothing -- run --probe first, which
+scans with a world-sized box and reports where the coordinates actually cluster.
 """
 import re, sys, math, struct, pickle, datetime, bisect, collections
+
+DEFAULT_BOX = ((-7000, -5500), (0, 1500), (200, 800))
+WORLD_BOX = ((-20000, 20000), (-20000, 20000), (-1000, 2000))
+
+
+def parse_box(text):
+    """`x0,x1,y0,y1` or `x0,x1,y0,y1,z0,z1` -> the nested tuple analyse wants."""
+    v = [float(t) for t in text.replace(' ', '').split(',')]
+    if len(v) == 4:
+        v += [-1000.0, 2000.0]
+    if len(v) != 6:
+        sys.exit("--box takes 4 or 6 comma-separated numbers: x0,x1,y0,y1[,z0,z1]")
+    return ((min(v[0], v[1]), max(v[0], v[1])),
+            (min(v[2], v[3]), max(v[2], v[3])),
+            (min(v[4], v[5]), max(v[4], v[5])))
 
 # ---------------------------------------------------------------- extraction
 HDR = re.compile(r'^(ServerToClient|ClientToServer): (\d+) \(0x([0-9A-F]+)\) '
@@ -131,7 +154,7 @@ def parse_monster_move(b, box):
     return g
 
 # -------------------------------------------------------------------- driver
-def analyse(path, box=((-7000,-5500),(0,1500),(200,800)), exclude=()):
+def analyse(path, box=DEFAULT_BOX, exclude=()):
     pkts = load(path)
     names = {}
     for d, op, t, n, ci, b in pkts:
@@ -177,6 +200,12 @@ def classify(moves, names, player_at):
         det = sum(x.most_common(1)[0][1] for x in succ.values())/tot if tot else 0.0
         cx = sum(m['dest'][0] for m in d)/len(d); cy = sum(m['dest'][1] for m in d)/len(d)
         rad = max(math.dist(m['dest'][:2], (cx, cy)) for m in d)
+        # `rad` is the outlier: one leash-break or chase puts it 40 yd out and
+        # it is no longer a description of the roam. wander_distance wants the
+        # radius the NPC actually keeps to, so take the 95th percentile of the
+        # displacement instead and let the tail go.
+        disp = sorted(math.dist(m['dest'][:2], (cx, cy)) for m in d)
+        p95 = disp[min(len(disp) - 1, int(0.95 * len(disp)))]
         legs = sorted(m['dist'] for m in v if m['dist'] > 1)
         med = legs[len(legs)//2] if legs else 1.0
         # What share of this unit's movement actually lands on stored nodes?
@@ -207,13 +236,116 @@ def classify(moves, names, player_at):
         seen = sum(m['dist'] for m in v); unseen = sum(g['disp'] for g in gaps)
         out.append(dict(entry=e, name=names.get(e, f'entry {e}'), counter=ctr,
                         moves=len(v), nodes=len(nodes), determinism=det, radius=rad,
+                        centre=(cx, cy), wander_radius=p95, map=v[0].get('map'),
                         median_leg=med, patrol=patrol, gaps=gaps, unseen=unseen, on_node=on_node,
                         completeness=seen/(seen+unseen) if seen+unseen else 1.0))
     return sorted(out, key=lambda r: (-r['patrol'], -r['determinism']))
 
+def probe(path):
+    """Where is this dump, and what is in it? Answered without a box up front.
+
+    The client's own position packets are the way in: they sit at a fixed
+    payload offset, so a world-sized box passes them through unchanged instead
+    of picking some other float triple out of the middle of a payload. Where
+    the player walked is the sniffed area by definition, and every NPC in the
+    dump was within visibility range of it, so padding that extent gives a box
+    tight enough to decode with and wide enough to keep the NPCs.
+    """
+    pkts = load(path)
+    pts = []
+    for d, op, t, n, ci, b in pkts:
+        if d == 'C' and op.startswith(OP_CLIENT_MOVE) and len(b) >= 33:
+            q = world_xyz(b, 21, WORLD_BOX)
+            if q:
+                pts.append(q)
+    if not pts:
+        sys.exit("no client movement packets decoded -- this dump may be a build "
+                 "whose C2S movement layout differs; see PACKET-DUMP-HANDOFF.md")
+    xs = sorted(p[0] for p in pts); ys = sorted(p[1] for p in pts)
+    zs = sorted(p[2] for p in pts)
+    def span(v):                      # trim the tail: a stray decode is not the zone
+        return v[int(0.01 * len(v))], v[int(0.99 * (len(v) - 1))]
+    (x0, x1), (y0, y1), (z0, z1) = span(xs), span(ys), span(zs)
+    pad = 150.0                       # NPCs are received out to ~100 yd
+    box = ((x0 - pad, x1 + pad), (y0 - pad, y1 + pad), (z0 - 200, z1 + 200))
+    print(f"{len(pts)} player positions: x {x0:.0f}..{x1:.0f}  y {y0:.0f}..{y1:.0f}  "
+          f"z {z0:.0f}..{z1:.0f}")
+    print(f"suggested --box {box[0][0]:.0f},{box[0][1]:.0f},"
+          f"{box[1][0]:.0f},{box[1][1]:.0f},{box[2][0]:.0f},{box[2][1]:.0f}")
+
+    r = analyse(path, box=box)
+    maps = collections.Counter(m['map'] for m in r['moves'])
+    seen = collections.Counter(m['entry'] for m in r['moves'])
+    print(f"{len(r['moves'])} monster-moves, maps {dict(maps)}, "
+          f"{len(seen)} entries, {len(r['names'])} names resolved")
+    for e, c in seen.most_common(15):
+        print(f"  {c:>5} moves  entry {e:<7} {r['names'].get(e, '?')}")
+    return box
+
+
+def stats(path, box=DEFAULT_BOX):
+    """Does the recovered packet layout still hold on this build?
+
+    Two checks, both from PACKET-DUMP-HANDOFF.md, and neither would pass under
+    a wrong field mapping:
+
+    * continuity -- where one spline ends is where the next one starts, so the
+      median distance from dest[N] to origin[N+1] for a unit should be a
+      fraction of a yard;
+    * speed -- distance over duration should pile up on 2.50 yd/s, the NPC walk
+      speed, with smaller clusters at the run speeds.
+
+    A build that shifted the layout fails both at once: continuity goes to tens
+    of yards and the speeds scatter. Run this before trusting anything else
+    from a dump of a build other than 12.1.0.69299.
+    """
+    r = analyse(path, box=box)
+    mv = r['moves']
+    if not mv:
+        sys.exit("no monster-moves decoded -- wrong box, or a build whose "
+                 "0x5E0002 layout differs; see PACKET-DUMP-HANDOFF.md")
+    per = collections.defaultdict(list)
+    for m in mv:
+        per[(m['entry'], m['counter'])].append(m)
+    cont = []
+    for v in per.values():
+        v.sort(key=lambda m: m['n'])
+        cont += [math.dist(a['dest'], b['origin']) for a, b in zip(v, v[1:])]
+    cont.sort()
+    speeds = collections.Counter()
+    n_speed = 0
+    for m in mv:
+        if m['duration'] > 0 and m['dist'] > 3:
+            speeds[round(m['dist'] / (m['duration'] / 1000.0), 1)] += 1
+            n_speed += 1
+    med = cont[len(cont)//2] if cont else float('nan')
+    near = sum(1 for c in cont if c <= 3.0) / len(cont) if cont else 0
+    walk = sum(c for s, c in speeds.items() if 2.4 <= s <= 2.6)
+    print(f"{len(mv)} monster-moves over {len(per)} spawns")
+    print(f"continuity: median {med:.3f} yd, {100*near:.1f}% within 3 yd "
+          f"({'OK' if med < 1.0 else 'SUSPECT -- layout may not fit this build'})")
+    print(f"speed: {100*walk/n_speed:.1f}% at 2.5 yd/s "
+          f"({'OK' if walk/max(n_speed,1) > 0.5 else 'SUSPECT'})  of {n_speed} legs")
+    for s, c in speeds.most_common(6):
+        print(f"  {c:>6} legs at {s:>5.1f} yd/s")
+
+
 if __name__ == '__main__':
-    if len(sys.argv) < 2: sys.exit(__doc__)
-    r = analyse(sys.argv[1])
+    argv = sys.argv[1:]
+    if not argv: sys.exit(__doc__)
+    if '--probe' in argv:
+        probe([a for a in argv if a != '--probe'][0])
+        sys.exit()
+    box = DEFAULT_BOX
+    for i, a in enumerate(list(argv)):
+        if a.startswith('--box='):
+            box = parse_box(a.split('=', 1)[1]); argv.remove(a); break
+        if a == '--box':
+            box = parse_box(argv[i + 1]); del argv[i:i + 2]; break
+    if '--stats' in argv:
+        stats([a for a in argv if a != '--stats'][0], box)
+        sys.exit()
+    r = analyse(argv[0], box=box)
     print(f"packets {len(r['packets'])}  monster-moves {len(r['moves'])}  "
           f"names {len(r['names'])}  player samples {len(r['track'])}\n")
     rows = classify(r['moves'], r['names'], r['player_at'])

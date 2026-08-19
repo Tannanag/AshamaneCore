@@ -6,17 +6,23 @@ Builds on wpp_movement.py: takes the spawns that classify() calls PATROL,
 walks the successor graph to recover node order, and reports where the route
 has a hole (gap event) versus where it genuinely closes.
 
-Usage:  python3 wpp_patrols.py [--sql] <dump_*_parsed.txt> [Name1] [Name2] ...
+Usage:  python3 wpp_patrols.py [options] <dump_*_parsed.txt> [Name1] [Name2] ...
 
-With --sql, emits the waypoint_data / creature_addon blocks instead of the
-text report, pairing each route with the ashamane_world spawn standing on
-one of its nodes.
+Modes:
+  (none)         text report of every recovered route
+  --sql          waypoint_data / creature_addon blocks for spawns that do not
+                 already patrol, pairing each route with the world-DB spawn
+                 standing on one of its nodes
+  --wander-sql   MovementType 1 + wander_distance for spawns that wander in the
+                 dump and stand still on the server, and, with --retune, radius
+                 corrections for spawns already wandering at the wrong range
+
+Naming no NPCs takes every name the dump resolved. The zone is not baked in:
+--box drives both the payload decoder and the world-DB query, and --map picks
+the map. `python3 wpp_movement.py --probe <dump>` suggests both.
 """
-import sys, math, collections, statistics
-from wpp_movement import analyse, classify
-
-DEFAULT_TARGETS = ["Sten Stoutarm", "Jona Ironstock", "Coldridge Mountaineer",
-                   "Coldridge Citizen", "Rockjaw Goon"]
+import sys, math, argparse, collections, statistics
+from wpp_movement import analyse, classify, parse_box, DEFAULT_BOX
 
 
 def _walk(succ, start):
@@ -273,28 +279,70 @@ VIS_RANGE = 90.0            # yd; beyond this the sniff stops seeing the NPC
 MIN_DWELL_SAMPLES = 3
 LEG_SANITY = 30.0           # yd; sound routes here top out around 25
 MIN_END_VISITS = 3          # laps needed at a terminus to call a route out-and-back
+MIN_WANDER = 1.5            # yd; below this an entry is standing still, not roaming
 
 
-def load_spawns(entries, cfg=None):
-    """`creature` rows for the sniffed box, via the mysql client."""
+def mysql(query, cfg=None, db=None):
+    """Run one query through the mysql client, tab-separated, no headers."""
     import subprocess
     c = dict(WORLD_DB, **(cfg or {}))
-    q = ("SELECT guid,id,position_x,position_y,position_z FROM creature "
-         "WHERE map=0 AND position_x BETWEEN -6600 AND -6000 "
-         "AND position_y BETWEEN 200 AND 700 AND id IN (%s);"
-         % ",".join(str(e) for e in sorted(entries)))
     out = subprocess.run(["mysql", "-h", c["host"], "-P", c["port"],
                           "-u", c["user"], "-p" + c["pw"], "-N", "-B",
-                          "-e", q, c["db"]],
+                          "-e", query, db or c["db"]],
                          capture_output=True, text=True)
     if out.returncode:
         sys.exit("mysql: " + out.stderr.strip())
+    return [l.split("\t") for l in out.stdout.splitlines()]
+
+
+def load_spawns(entries, box=DEFAULT_BOX, map_id=0, cfg=None):
+    """`creature` rows inside the sniffed box, with the movement they already have.
+
+    The movement state travels with the row on purpose. Whether a spawn already
+    patrols is a question about the server, not about the sniff, and answering
+    it here is what keeps the emitters from proposing work that is already
+    done. A spawn counts as patrolling only with all three pieces in place --
+    MovementType 2, an addon path_id, and waypoint rows under that id --
+    because any one of them missing is the half-applied state
+    ObjectMgr::LoadCreatureAddons silently downgrades back to idle, which is a
+    spawn to fix, not one to skip.
+    """
+    if not entries:
+        return []
+    (x0, x1), (y0, y1) = box[0], box[1]
+    q = ("SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, "
+         "c.MovementType, c.wander_distance, IFNULL(a.path_id, 0), "
+         "(SELECT COUNT(*) FROM waypoint_data w WHERE w.id = a.path_id) "
+         "FROM creature c LEFT JOIN creature_addon a ON a.guid = c.guid "
+         f"WHERE c.map = {map_id} "
+         f"AND c.position_x BETWEEN {x0:.1f} AND {x1:.1f} "
+         f"AND c.position_y BETWEEN {y0:.1f} AND {y1:.1f} "
+         "AND c.id IN (%s);" % ",".join(str(e) for e in sorted(entries)))
     rows = []
-    for line in out.stdout.splitlines():
-        g, i, x, y, z = line.split("\t")
+    for g, i, x, y, z, mt, wd, pid, wp in mysql(q, cfg):
         rows.append(dict(guid=int(g), entry=int(i),
-                         pos=(float(x), float(y), float(z))))
+                         pos=(float(x), float(y), float(z)),
+                         movement_type=int(mt), wander_distance=float(wd),
+                         path_id=int(pid), waypoints=int(wp)))
     return rows
+
+
+def already_patrols(s):
+    return s['movement_type'] == 2 and s['path_id'] and s['waypoints']
+
+
+def spawn_counts(entries, cfg=None):
+    """Server-wide spawn count per entry -- the blast-radius check.
+
+    Alpine Hare has 562 spawns and 26 of them are in Coldridge; the number
+    exists so an entry-wide UPDATE that escaped the zone would be obvious in
+    the file header rather than discovered in another zone later.
+    """
+    if not entries:
+        return {}
+    q = ("SELECT id, COUNT(*) FROM creature WHERE id IN (%s) GROUP BY id;"
+         % ",".join(str(e) for e in sorted(entries)))
+    return {int(i): int(c) for i, c in mysql(q, cfg)}
 
 
 def full_order(rt):
@@ -547,14 +595,40 @@ def match_spawn(rt, order, spawns, entry):
         d = min(math.dist(s['pos'][:2], p[:2]) for p in nodes)
         scored.append((d, s))
     if not scored:
-        sys.exit(f"no DB spawn of entry {entry} inside the sniffed box")
+        raise LookupError(f"no DB spawn of entry {entry} inside the sniffed box")
     scored.sort(key=lambda t: t[0])
     d, s = scored[0]
     runner_up = scored[1][0] if len(scored) > 1 else float('inf')
     if d > MATCH_TOLERANCE:
-        sys.exit(f"entry {entry}: nearest spawn is {d:.2f} yd from any node "
-                 f"(tolerance {MATCH_TOLERANCE}) -- refusing to guess")
+        raise LookupError(f"nearest spawn of entry {entry} is {d:.2f} yd from any "
+                          f"node (tolerance {MATCH_TOLERANCE}) -- refusing to guess")
     return s, d, runner_up
+
+
+def path_shape(order):
+    """How the route runs, from the emitted order alone.
+
+    Three shapes turn up, and they are told apart by how many times each node
+    appears in one lap:
+
+    * every node once -- a circuit, A B C A;
+    * two nodes once and the rest twice -- a line walked out and back,
+      A B C D C B, whose ends are the two singletons;
+    * anything else -- a circuit with a spur retraced partway,
+      A B C D C B E F G, which is a real shape and not a parsing failure.
+
+    All three emit the same way: waypoint_data is a cyclic list, so a retraced
+    node is simply listed again at the point it is walked again.
+    """
+    n = collections.Counter(order)
+    once = [i for i, c in n.items() if c == 1]
+    if len(order) == len(n):
+        return "circuit", f"circuit of {len(n)} nodes"
+    if len(once) == 2 and max(n.values()) == 2:
+        return "out-and-back", (f"out-and-back over {len(n)} nodes "
+                                f"({len(order)} stops per lap)")
+    return "mixed", (f"circuit of {len(n)} nodes with {len(order) - len(n)} "
+                     f"retraced stop(s) -- a spur walked out and back inside the lap")
 
 
 def route_speed(moves):
@@ -609,15 +683,19 @@ def node_delays(moves, rt, order, player_at):
     return out
 
 
-def emit_sql(picked, by_spawn, player_at):
-    """Print the Part A patrol blocks: one per matched spawn."""
-    spawns = load_spawns({x['entry'] for x in picked})
-    blocks, total, claimed = [], 0, {}
+def emit_sql(picked, by_spawn, player_at, spawns, include_existing=False):
+    """Print the patrol blocks: one per matched spawn that needs one."""
+    blocks, total, claimed, skipped = [], 0, {}, []
+    touched = []
     for x in picked:
         v = by_spawn[(x['entry'], x['counter'])]
         rt = route(v)
         order, how = recover_order(rt, v)
-        s, d, runner_up = match_spawn(rt, order, spawns, x['entry'])
+        try:
+            s, d, runner_up = match_spawn(rt, order, spawns, x['entry'])
+        except LookupError as e:
+            skipped.append((x, str(e)))
+            continue
         guid = s['guid']
         # two routes landing on one guid means the pairing is wrong, and the
         # second block would silently overwrite the first
@@ -625,6 +703,14 @@ def emit_sql(picked, by_spawn, player_at):
             sys.exit(f"guid {guid} matched by both retail spawn "
                      f"{claimed[guid]} and {x['counter']} -- ambiguous")
         claimed[guid] = x['counter']
+        # Already walking a path with waypoints under it: the server has this
+        # NPC's movement, and re-emitting it would replace working data with a
+        # reconstruction from one sniff. --include-existing overrides, for when
+        # the existing path is the thing being corrected.
+        if already_patrols(s) and not include_existing:
+            skipped.append((x, f"guid {guid} already patrols path {s['path_id']} "
+                               f"({s['waypoints']} waypoints)"))
+            continue
         # keyed by guid, so this has to wait until the spawn is identified
         before_fix = len(order)
         order = apply_in_game_fixes(guid, order, rt['nodes'])
@@ -653,18 +739,28 @@ def emit_sql(picked, by_spawn, player_at):
             warn.append(f"spawn point sits {spawn_off:.0f} yd off the path, though "
                         f"it matched a node at {d:.1f} yd -- the emitted order "
                         f"dropped the node it stands on")
+        uncovered = [g for g in x['gaps']
+                     if not gap_covered(g, nodes, order, median_leg=x['median_leg'])[0]]
+        if uncovered:
+            est = sum(g['est_nodes'] for g in uncovered)
+            warn.append(f"{len(uncovered)} gap(s) in the sniff span ground no lap "
+                        f"covered -- roughly {est} waypoint(s) of this route were "
+                        f"never seen and are not in the list below")
 
-        print(f"-- {x['name']} (entry {x['entry']}) -- retail spawn {x['counter']}")
+        print(f"-- {x['name']} (entry {x['entry']}) -- sniffed spawn {x['counter']}")
         rival = (f"next candidate {runner_up:.1f} yd" if runner_up < float('inf')
                  else "the only spawn of this entry in the box")
         print(f"--   matched guid {guid} at {d:.3f} yd from a route node ({rival})")
-        shape = ("back-and-forth over %d nodes" % len(set(order))
-                 if len(order) != len(set(order)) else "circuit")
-        print(f"--   {len(order)} waypoints, {shape} via {how}, "
+        kind, shape = path_shape(order)
+        print(f"--   {len(order)} waypoints, {shape}, via {how}, "
               f"{'run' if mt else 'walk'} "
               f"({route_speed(v):.2f} yd/s), {len(delays)} node(s) with a delay"
               + (f", {dropped} unlinked node(s) dropped" if dropped else "")
               + (f", {added} stop(s) added from in-game observation" if added else ""))
+        print(f"--   was MovementType {s['movement_type']}, "
+              f"wander_distance {s['wander_distance']:.0f}, "
+              + (f"path {s['path_id']} with {s['waypoints']} waypoints"
+                 if s['path_id'] else "no creature_addon path"))
         for w in warn:
             print(f"--   WARNING: {w}")
         print(f"SET @NPC := {guid};  SET @PATH := @NPC * 10;")
@@ -685,18 +781,161 @@ def emit_sql(picked, by_spawn, player_at):
                   f"{delays.get(i, 0)},{mt},0,100,0){sep}")
         print()
         total += len(order)
+        touched.append(guid)
         blocks.append((guid, len(order)))
-    print(f"-- {len(blocks)} paths, {total} waypoint rows total")
+    for x, why in skipped:
+        print(f"-- SKIPPED {x['name']} (entry {x['entry']}, sniffed spawn "
+              f"{x['counter']}): {why}")
+    if skipped:
+        print()
+    print(f"-- {len(blocks)} paths, {total} waypoint rows total, "
+          f"{len(skipped)} route(s) skipped")
+    # Read back by wpp_apply.py to snapshot exactly these spawns before the file
+    # is applied. Emitted even when empty, so a missing line means the file was
+    # hand-written and has no snapshot behind it.
+    print(f"-- @touched: creature,creature_addon,waypoint_data "
+          f"{','.join(str(g) for g in touched)}")
+
+
+def wander_radii(rows, names):
+    """Radius per entry: the median across spawns of each spawn's 95th percentile.
+
+    Per entry rather than per spawn, because a wander radius is a property of
+    the creature, and because matching an individual sniffed wanderer to an
+    individual DB spawn is not reliable -- critters sit densely enough that
+    nearest-centroid pairing produced matches over 100 yd in Coldridge. The
+    median across spawns then absorbs the one spawn that was chased across the
+    zone during the sniff and would otherwise set the radius for the entry.
+    """
+    per = collections.defaultdict(list)
+    for x in rows:
+        if x['patrol']:
+            continue                  # a route is not a roam
+        per[x['entry']].append(x)
+    out = {}
+    for e, xs in per.items():
+        r = statistics.median(x['wander_radius'] for x in xs)
+        if r < MIN_WANDER:
+            continue                  # standing still, or one combat leash
+        out[e] = dict(entry=e, name=names.get(e, f'entry {e}'),
+                      radius=max(1, int(round(r))), spawns=len(xs),
+                      lo=min(x['wander_radius'] for x in xs),
+                      hi=max(x['wander_radius'] for x in xs),
+                      centres=[x['centre'] for x in xs])
+    return out
+
+
+def emit_wander_sql(rows, names, spawns, counts, retune=0.0):
+    """Print the wander blocks: spawns to start wandering, and radii to correct.
+
+    Two separate questions, deliberately emitted as two separate statements:
+    a spawn that stands still where retail roams is missing movement, while a
+    spawn already roaming at the wrong range is a number to fix. The second is
+    the broader and more arguable change, so it is gated behind --retune and
+    only fires past a factor, not on every disagreement.
+    """
+    rad = wander_radii(rows, names)
+    if not rad:
+        print("-- no entry in this dump wanders far enough to be worth a radius")
+        return
+    add, fix, touched = collections.defaultdict(list), collections.defaultdict(list), []
+    for s in spawns:
+        info = rad.get(s['entry'])
+        if not info:
+            continue
+        # A wanderer's centre is its spawn point, so the DB spawn has to be
+        # under one of the sniffed roams before its radius means anything here.
+        near = min(math.dist(s['pos'][:2], c) for c in info['centres'])
+        if near > max(MATCH_TOLERANCE, 1.5 * info['radius']):
+            continue
+        if already_patrols(s) or s['movement_type'] == 2:
+            continue                  # never trade a route for a roam
+        if s['movement_type'] == 0:
+            add[s['entry']].append(s['guid'])
+            touched.append(s['guid'])
+        elif s['movement_type'] == 1 and retune:
+            have = max(s['wander_distance'], 0.5)
+            if max(have / info['radius'], info['radius'] / have) >= retune:
+                fix[s['entry']].append((s['guid'], s['wander_distance']))
+                touched.append(s['guid'])
+
+    print("-- Radius per entry: median over the sniffed spawns of each spawn's")
+    print("-- 95th-percentile displacement from its own centre.")
+    for e, info in sorted(rad.items()):
+        print(f"--   {info['name']} ({e}): {info['radius']} yd from "
+              f"{info['spawns']} sniffed spawn(s), range {info['lo']:.1f}-{info['hi']:.1f} yd"
+              f"  [{counts.get(e, 0)} spawns server-wide]")
+    print()
+
+    if add:
+        print("-- Idle on the server, roaming in the sniff.")
+        for e in sorted(add):
+            g = sorted(add[e])
+            print(f"-- {rad[e]['name']} ({e}): {len(g)} spawn(s) -> wander_distance "
+                  f"{rad[e]['radius']}")
+            print(f"UPDATE `creature` SET `MovementType`=1, `wander_distance`="
+                  f"{rad[e]['radius']} WHERE `id`={e} AND `guid` IN (")
+            print(_guid_list(g) + ");")
+        print()
+    if fix:
+        print(f"-- Already roaming, but at a radius off by {retune:g}x or more.")
+        for e in sorted(fix):
+            g = sorted(fix[e])
+            was = sorted({int(w) for _, w in g})
+            print(f"-- {rad[e]['name']} ({e}): {len(g)} spawn(s), "
+                  f"{'/'.join(str(w) for w in was)} -> {rad[e]['radius']}")
+            print(f"UPDATE `creature` SET `wander_distance`={rad[e]['radius']} "
+                  f"WHERE `id`={e} AND `guid` IN (")
+            print(_guid_list([x[0] for x in g]) + ");")
+        print()
+    print(f"-- {sum(len(g) for g in add.values())} spawn(s) gain wander, "
+          f"{sum(len(g) for g in fix.values())} radius correction(s)")
+    print(f"-- @touched: creature {','.join(str(g) for g in sorted(touched))}")
+
+
+def _guid_list(guids, per_line=10):
+    """Guids, ten to a line -- always an explicit list, never a bare `WHERE id`.
+
+    Alpine Hare has 562 spawns and 26 of them are in the zone that was sniffed.
+    An entry-wide UPDATE would retune hares in every zone in the game and
+    nothing in the file would say so.
+    """
+    rows = [", ".join(str(g) for g in guids[i:i + per_line])
+            for i in range(0, len(guids), per_line)]
+    return ",\n".join("    " + r for r in rows)
 
 
 def main():
-    argv = sys.argv[1:]
-    sql = '--sql' in argv
-    argv = [a for a in argv if a != '--sql']
-    path = argv[0]
-    targets = argv[1:] or DEFAULT_TARGETS
-    r = analyse(path)
+    ap = argparse.ArgumentParser(
+        description="Recover patrol routes and wander radii from an unparsed WPP dump.")
+    ap.add_argument('dump', help='dump_*_parsed.txt from WowPacketParser')
+    ap.add_argument('names', nargs='*',
+                    help='NPC names to report on; default is every name in the dump')
+    ap.add_argument('--sql', action='store_true', help='emit patrol path SQL')
+    ap.add_argument('--wander-sql', action='store_true',
+                    help='emit MovementType 1 + wander_distance SQL')
+    ap.add_argument('--retune', type=float, default=0.0, metavar='FACTOR',
+                    help='with --wander-sql, also correct radii that are off by '
+                         'this factor or more (3 is the bar used in Coldridge)')
+    ap.add_argument('--box', help='x0,x1,y0,y1[,z0,z1] -- decoder window and DB '
+                                  'query bounds; wpp_movement.py --probe suggests one')
+    ap.add_argument('--map', type=int, default=0, help='map id for the DB query')
+    ap.add_argument('--include-existing', action='store_true',
+                    help='emit paths for spawns that already patrol (replaces them)')
+    ap.add_argument('--db-host'), ap.add_argument('--db-port')
+    ap.add_argument('--db-user'), ap.add_argument('--db-pass')
+    ap.add_argument('--db-name')
+    args = ap.parse_args()
+
+    box = parse_box(args.box) if args.box else DEFAULT_BOX
+    cfg = {k: v for k, v in (('host', args.db_host), ('port', args.db_port),
+                             ('user', args.db_user), ('pw', args.db_pass),
+                             ('db', args.db_name)) if v}
+
+    r = analyse(args.dump, box=box)
     rows = classify(r['moves'], r['names'], r['player_at'])
+    if args.names:
+        rows = [x for x in rows if x['name'] in set(args.names)]
 
     by_spawn = collections.defaultdict(list)
     for m in r['moves']:
@@ -704,13 +943,23 @@ def main():
     for v in by_spawn.values():
         v.sort(key=lambda m: m['n'])
 
-    picked = [x for x in rows if x['patrol'] and x['name'] in targets]
-    if sql:
-        emit_sql(picked, by_spawn, r['player_at'])
+    picked = [x for x in rows if x['patrol']]
+    if args.sql or args.wander_sql:
+        want = ({x['entry'] for x in picked} if args.sql else set())
+        if args.wander_sql:
+            want |= {x['entry'] for x in rows if not x['patrol']}
+        spawns = load_spawns(want, box, args.map, cfg)
+        if args.sql:
+            emit_sql(picked, by_spawn, r['player_at'], spawns, args.include_existing)
+        if args.wander_sql:
+            if args.sql:
+                print()
+            emit_wander_sql(rows, r['names'], spawns,
+                            spawn_counts(want, cfg), args.retune)
         return
-    print(f"# {path}")
+    print(f"# {args.dump}")
     print(f"# {len(r['moves'])} monster-moves, {len(rows)} tracked spawns, "
-          f"{len(picked)} patrol spawns among {len(targets)} targeted names\n")
+          f"{len(picked)} patrol spawns\n")
 
     for x in picked:
         v = by_spawn[(x['entry'], x['counter'])]

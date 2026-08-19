@@ -38,6 +38,24 @@ DOTNET_ROOT=/home/serverproject/.dotnet /home/serverproject/.dotnet/dotnet \
 Writes `<dump>_parsed.txt` next to the input (~7x the .pkt size). Parse once — every
 step below reads that file, and each read takes a few minutes on a 100 MB text dump.
 
+`Parsed 0 (0.000%) packets successfully, skipped N (100.000%)` is the expected result,
+not a failure — WPP has no opcode tables for retail 12.x and the raw hex is the input.
+
+**A build WPP has never seen fails differently**: a `TypeInitializationException` from
+`UpdateFields`, a zero-byte parsed file, and nothing else. WPP throws while setting the
+version, before it reads a packet. Register the build as an alias of the newest one it
+does know — four sites, all mechanical, mirroring the previous build's entries:
+
+- `Enums/ClientVersionBuild.cs` — `V12_1_0_69382 = 69382,`
+- `Enums/Version/UpdateFields.cs` and `Enums/Version/Opcodes.cs` — add the `case` to the
+  switch that returns the version-defining build
+- `Misc/ClientVersion.cs` — the same `case`, plus a date row in the build list
+
+Then `dotnet build WowPacketParser/WowPacketParser.csproj -c Release` (with `DOTNET_ROOT`
+set as above) and parse again. The 12.1.0 modules are empty stubs, so this only makes WPP
+willing to dump the hex — which is all the decoder needs. Confirm with step 3 rather than
+assuming the alias was safe; 69382 passed unchanged against a layout recovered on 69299.
+
 ## 2. Find the zone
 
 ```bash

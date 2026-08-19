@@ -715,6 +715,15 @@ def emit_sql(picked, by_spawn, player_at, spawns, include_existing=False):
         before_fix = len(order)
         order = apply_in_game_fixes(guid, order, rt['nodes'])
         added = len(order) - before_fix
+        # Start the path at the node the spawn stands on. waypoint_data is
+        # cyclic, so rotating it changes nothing about the route -- but the
+        # core sends a freshly spawned NPC to point 1 first, and a path that
+        # starts on the far side of the loop makes it walk the diameter before
+        # it ever patrols. Which node the sniff happened to observe first is an
+        # accident of when the player arrived; where the spawn stands is not.
+        start = min(range(len(order)),
+                    key=lambda k: math.dist(s['pos'][:2], rt['nodes'][order[k]][:2]))
+        order = order[start:] + order[:start]
         mt = 1 if route_speed(v) > RUN_SPEED_CUTOFF else 0
         delays = node_delays(v, rt, order, player_at)
         nodes = rt['nodes']

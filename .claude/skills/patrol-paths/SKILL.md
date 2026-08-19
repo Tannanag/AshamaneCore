@@ -156,6 +156,14 @@ lines; they carry the match distance, shape, speed and warnings.
 Keep the `-- @touched:` line at the end of each file. `wpp_apply.py` reads it to know
 what to snapshot, and refuses to run without it.
 
+**Point 1 must be the node nearest the spawn point.** The core sends a freshly
+spawned NPC to point 1 before it patrols, so a path starting on the far side of its
+own loop makes the NPC walk the diameter on every respawn. `emit_sql` rotates the
+order automatically — waypoint_data is cyclic, so rotation changes where the route is
+entered and nothing else — but check it on any file you hand-edit. If the spawn point
+is not on the path at all, rotation gets you the nearest node and closing the rest
+means moving the spawn, which is a separate decision.
+
 Two things that will bite otherwise:
 - `ObjectMgr::LoadCreatureAddons` silently downgrades `MovementType=2` to idle when the
   spawn has no `creature_addon.path_id`. The addon row is mandatory.

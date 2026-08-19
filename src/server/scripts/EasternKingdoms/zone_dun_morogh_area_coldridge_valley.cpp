@@ -373,6 +373,47 @@ public:
     }
 };
 
+enum HandsSpringsprocket
+{
+    QUEST_A_TRIP_TO_IRONFORGE = 24490,
+
+    // "Alright, so you're just going to head through this tunnel and whaaaaa....?"
+    // creature_text carries sound 12549 on this line, which is the same sound
+    // 70046's second effect plays - see the spell script below.
+    SAY_CAVE_IN               = 0
+};
+
+/*######
+# npc_hands_springsprocket
+# 6782 - Hands Springsprocket
+######*/
+
+// He ends "A Trip to Ironforge" (24490), and the tunnel behind him comes down as he
+// says so. Everything the collapse consists of is data: the rubble (gameobject 201711)
+// and Milo both sit in phase 170, which `phase_area` hands the player the moment 24490
+// is rewarded - Player::RewardQuest calls SendQuestUpdate, which calls
+// PhasingHandler::OnConditionChange, so the phase lands while the player is still
+// standing in front of him rather than on the next area change.
+//
+// What is left for a script is the line itself. It is the reaction to the cave-in, not
+// a gossip or a farewell, so nothing in the quest tables would ever play it.
+class npc_hands_springsprocket : public CreatureScript
+{
+public:
+    npc_hands_springsprocket() : CreatureScript("npc_hands_springsprocket") { }
+
+    // Returning false matters: QuestHandler only offers the follow-up quest - 24491,
+    // "Follow that Gyro-Copter!", which is the whole point of the collapse - when this
+    // hook declines to take the turn-in over.
+    bool OnQuestReward(Player* player, Creature* creature, Quest const* quest, uint32 /*opt*/) override
+    {
+        if (quest->GetQuestId() == QUEST_A_TRIP_TO_IRONFORGE)
+            creature->AI()->Talk(SAY_CAVE_IN, player);
+
+        return false;
+    }
+};
+
 /*######
 # spell_a_trip_to_ironforge_quest_complete
 # 70046 - A Trip to Ironforge - Quest Complete
@@ -393,9 +434,19 @@ public:
             GetHitUnit()->CastSpell(GetHitUnit(), GetSpellInfo()->GetEffect(effIndex)->TriggerSpell, true);
         }
 
+        // Effect 1 is PLAY_SOUND 12549, which is Hands' voice line for the cave-in.
+        // creature_text group 0 carries the same sound id, and CreatureTextMgr sends it
+        // alongside the text, so letting both through plays the line twice over the
+        // subtitle. The talk is the one that shows the words, so it keeps the sound.
+        void SuppressDuplicateSound(SpellEffIndex effIndex)
+        {
+            PreventHitDefaultEffect(effIndex);
+        }
+
         void Register() override
         {
             OnEffectHitTarget += SpellEffectFn(spell_a_trip_to_ironforge_quest_complete_SpellScript::HandleForceCast, EFFECT_0, SPELL_EFFECT_FORCE_CAST);
+            OnEffectHitTarget += SpellEffectFn(spell_a_trip_to_ironforge_quest_complete_SpellScript::SuppressDuplicateSound, EFFECT_1, SPELL_EFFECT_PLAY_SOUND);
         }
     };
 
@@ -872,6 +923,7 @@ void AddSC_dun_morogh_area_coldridge_valley()
     new npc_wounded_coldridge_mountaineer();
     new npc_wounded_milita();
     new npc_milos_gyro();
+    new npc_hands_springsprocket();
     new spell_a_trip_to_ironforge_quest_complete();
     new spell_follow_that_gyrocopter_quest_start();
     new spell_low_health();

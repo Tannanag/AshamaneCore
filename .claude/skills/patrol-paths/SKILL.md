@@ -98,6 +98,16 @@ retraced node is simply listed again where it is walked again:
 - **mixed** — a loop with a spur retraced partway, `A B C D C B E F G A`. This is a real
   shape, not a parsing failure; report it as such.
 
+**A respawn is not a second spawn.** A creature that dies comes back with a fresh
+guid counter, so one NPC killed twice reads as three spawns keyed on (entry, counter) --
+splitting its route into partial observations, and, when two pieces match the same DB
+spawn, aborting the emitter as ambiguous. `analyse()` folds them back automatically:
+instances whose observation windows never overlap and which share bit-identical
+destination coordinates are the same NPC. `--probe` reports how many were folded. If an
+ambiguous abort survives that, check the instances' time windows before believing the
+sniff shows two NPCs — merging needs two shared exact coordinates, which an NPC killed
+away from its route may not have.
+
 **Say plainly when data is missing.** The sniff only sees ~100 yd, so an NPC that walks
 out of range keeps patrolling unobserved and the packets were never sent. The signals,
 all reported for you: an INCOMPLETE verdict with estimated missing nodes, a

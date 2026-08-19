@@ -31,9 +31,11 @@
 --   * Frostmane Blade 167243. The sniff caught only 4 of its 11 nodes joined up,
 --     and the 6-stop lap that survives sits 45 yd from where the spawn stands --
 --     a fragment of a route, not the route.
---   * Wayward Fire Elemental. Retail runs two elementals on that loop
---     (sniffed spawns 316482 and 311438) and this DB has one spawn, 167308, so
---     both routes claim it. Needs a decision about the missing spawn first.
+--   * Wayward Fire Elemental, held back here because two sniffed spawns both
+--     claimed guid 167308. They turned out to be one elemental either side of a
+--     death -- a respawn carries a fresh guid counter -- and its route is applied
+--     in 2026_08_18_03_world.sql. There is one spawn of 37112 and retail has one
+--     elemental; an earlier draft of this header said otherwise and was wrong.
 --   * Coldridge Mountaineer sniffed spawn 25455800: nearest DB spawn is 8.39 yd
 --     from any node, past the 8 yd bar, so it is not identified.
 --

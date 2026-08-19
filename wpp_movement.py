@@ -153,8 +153,69 @@ def parse_monster_move(b, box):
         g['waypoints'] = []
     return g
 
+def merge_respawns(moves, min_shared=2):
+    """Fold each NPC's respawns back into one spawn.
+
+    A creature that dies comes back with a fresh guid counter, so keying on
+    (entry, counter) reads one NPC killed twice as three separate spawns. That
+    is not a cosmetic problem: it splits one patrol route across several partial
+    observations, and when two of the pieces both match the same DB spawn the
+    emitter reports the pairing as ambiguous and refuses -- which is exactly how
+    this was found, on a Wayward Fire Elemental whose three instances were 0.3
+    yd apart and shared 13 waypoints.
+
+    Two instances are the same NPC when their observation windows do not
+    overlap -- both cannot be alive at once -- and they share bit-identical
+    destination coordinates, which is a stored waypoint replayed by the same
+    spawn. Position alone would merge two wanderers of the same entry standing
+    near each other; shared exact float triples will not, because random wander
+    never repeats a coordinate exactly.
+    """
+    inst = collections.defaultdict(list)
+    for m in moves:
+        inst[(m['entry'], m['counter'])].append(m)
+    for v in inst.values():
+        v.sort(key=lambda m: m['ts'])
+
+    by_entry = collections.defaultdict(list)
+    for k, v in inst.items():
+        by_entry[k[0]].append((k, v))
+
+    par = {k: k for k in inst}
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]; x = par[x]
+        return x
+
+    merged = 0
+    for ks in by_entry.values():
+        ks.sort(key=lambda kv: kv[1][0]['ts'])
+        dests = {k: set(m['dest'] for m in v) for k, v in ks}
+        for i in range(len(ks)):
+            for j in range(i + 1, len(ks)):
+                (ka, a), (kb, b) = ks[i], ks[j]
+                if a[-1]['ts'] >= b[0]['ts'] and b[-1]['ts'] >= a[0]['ts']:
+                    continue                      # alive together: two NPCs
+                if len(dests[ka] & dests[kb]) < min_shared:
+                    continue
+                ra, rb = find(ka), find(kb)
+                if ra != rb:
+                    par[ra] = rb; merged += 1
+
+    # the earliest counter of each group names it, so ids stay stable
+    canon = {}
+    for k in inst:
+        canon.setdefault(find(k), []).append(k)
+    for root, group in canon.items():
+        keep = min(group, key=lambda k: inst[k][0]['ts'])[1]
+        for k in group:
+            for m in inst[k]:
+                m['counter'] = keep
+    return merged
+
+
 # -------------------------------------------------------------------- driver
-def analyse(path, box=DEFAULT_BOX, exclude=()):
+def analyse(path, box=DEFAULT_BOX, exclude=(), merge=True):
     pkts = load(path)
     names = {}
     for d, op, t, n, ci, b in pkts:
@@ -178,7 +239,8 @@ def analyse(path, box=DEFAULT_BOX, exclude=()):
         g = parse_monster_move(b, box)
         if g and g['entry'] not in exclude:
             g['ts'] = t; g['n'] = n; moves.append(g)
-    return dict(packets=pkts, names=names, moves=moves,
+    merged = merge_respawns(moves) if merge else 0
+    return dict(packets=pkts, names=names, moves=moves, merged=merged,
                 track=track, player_at=player_at)
 
 # ------------------------------------------------- patrol / wander / gap logic
@@ -277,7 +339,8 @@ def probe(path):
     maps = collections.Counter(m['map'] for m in r['moves'])
     seen = collections.Counter(m['entry'] for m in r['moves'])
     print(f"{len(r['moves'])} monster-moves, maps {dict(maps)}, "
-          f"{len(seen)} entries, {len(r['names'])} names resolved")
+          f"{len(seen)} entries, {len(r['names'])} names resolved, "
+          f"{r['merged']} respawn(s) folded back into their spawn")
     for e, c in seen.most_common(15):
         print(f"  {c:>5} moves  entry {e:<7} {r['names'].get(e, '?')}")
     return box

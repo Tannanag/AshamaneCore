@@ -825,7 +825,29 @@ def wander_radii(rows, names):
     return out
 
 
-def emit_wander_sql(rows, names, spawns, counts, retune=0.0):
+def patrol_claims(picked, by_spawn, spawns):
+    """Guids the patrol half of this dump is about to bind to a path.
+
+    The two emitters answer different questions and are usually run as two
+    separate commands, so without this the same spawn can be handed a route by
+    one file and a wander radius by the other -- and whichever lands second
+    wins, silently. A spawn that has a route is not a wanderer.
+    """
+    out = set()
+    for x in picked:
+        v = by_spawn[(x['entry'], x['counter'])]
+        rt = route(v)
+        order, _how = recover_order(rt, v)
+        try:
+            s, _d, _r = match_spawn(rt, order, spawns, x['entry'])
+        except LookupError:
+            continue
+        out.add(s['guid'])
+    return out
+
+
+def emit_wander_sql(rows, names, spawns, counts, retune=0.0, claimed=(),
+                    min_spawns=2):
     """Print the wander blocks: spawns to start wandering, and radii to correct.
 
     Two separate questions, deliberately emitted as two separate statements:
@@ -843,6 +865,8 @@ def emit_wander_sql(rows, names, spawns, counts, retune=0.0):
         info = rad.get(s['entry'])
         if not info:
             continue
+        if s['guid'] in claimed:
+            continue                  # this dump gives it a patrol route instead
         # A wanderer's centre is its spawn point, so the DB spawn has to be
         # under one of the sniffed roams before its radius means anything here.
         near = min(math.dist(s['pos'][:2], c) for c in info['centres'])
@@ -854,6 +878,15 @@ def emit_wander_sql(rows, names, spawns, counts, retune=0.0):
             add[s['entry']].append(s['guid'])
             touched.append(s['guid'])
         elif s['movement_type'] == 1 and retune:
+            # One sniffed spawn is not evidence of a radius: a single NPC that
+            # chased something across the zone during the sniff produces a
+            # large 95th percentile with nothing to median it against, and a
+            # retune would then widen every spawn of the entry on the strength
+            # of one fight. Adding movement where there is none is a smaller
+            # risk than rewriting movement that already works, so this bar
+            # applies to corrections only.
+            if info['spawns'] < min_spawns:
+                continue
             have = max(s['wander_distance'], 0.5)
             if max(have / info['radius'], info['radius'] / have) >= retune:
                 fix[s['entry']].append((s['guid'], s['wander_distance']))
@@ -864,7 +897,9 @@ def emit_wander_sql(rows, names, spawns, counts, retune=0.0):
     for e, info in sorted(rad.items()):
         print(f"--   {info['name']} ({e}): {info['radius']} yd from "
               f"{info['spawns']} sniffed spawn(s), range {info['lo']:.1f}-{info['hi']:.1f} yd"
-              f"  [{counts.get(e, 0)} spawns server-wide]")
+              f"  [{counts.get(e, 0)} spawns server-wide]"
+              + ("  -- single spawn, no median behind it"
+                 if info['spawns'] < min_spawns else ""))
     print()
 
     if add:
@@ -920,6 +955,9 @@ def main():
     ap.add_argument('--box', help='x0,x1,y0,y1[,z0,z1] -- decoder window and DB '
                                   'query bounds; wpp_movement.py --probe suggests one')
     ap.add_argument('--map', type=int, default=0, help='map id for the DB query')
+    ap.add_argument('--min-wander-spawns', type=int, default=2, metavar='N',
+                    help='sniffed spawns an entry needs before --retune will '
+                         'correct its radius (default 2)')
     ap.add_argument('--include-existing', action='store_true',
                     help='emit paths for spawns that already patrol (replaces them)')
     ap.add_argument('--db-host'), ap.add_argument('--db-port')
@@ -945,7 +983,7 @@ def main():
 
     picked = [x for x in rows if x['patrol']]
     if args.sql or args.wander_sql:
-        want = ({x['entry'] for x in picked} if args.sql else set())
+        want = {x['entry'] for x in picked}
         if args.wander_sql:
             want |= {x['entry'] for x in rows if not x['patrol']}
         spawns = load_spawns(want, box, args.map, cfg)
@@ -954,8 +992,9 @@ def main():
         if args.wander_sql:
             if args.sql:
                 print()
-            emit_wander_sql(rows, r['names'], spawns,
-                            spawn_counts(want, cfg), args.retune)
+            emit_wander_sql(rows, r['names'], spawns, spawn_counts(want, cfg),
+                            args.retune, patrol_claims(picked, by_spawn, spawns),
+                            args.min_wander_spawns)
         return
     print(f"# {args.dump}")
     print(f"# {len(r['moves'])} monster-moves, {len(rows)} tracked spawns, "

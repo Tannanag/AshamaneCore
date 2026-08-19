@@ -174,7 +174,10 @@ def main():
     when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     base = os.path.basename(a.forward).rsplit('.', 1)[0]
-    backup = os.path.join(a.revert_dir, f"backup-{stamp}")
+    # The file name is in the directory name, not just the timestamp:
+    # applying three files in the same second otherwise puts three
+    # snapshots in one directory, each overwriting the last.
+    backup = os.path.join(a.revert_dir, f"backup-{stamp}-{base}")
     revert = os.path.join(a.revert_dir, base + "_revert.sql")
 
     print(f"{a.forward}: {len(guids)} spawn(s), tables {', '.join(tables)}")

@@ -1,0 +1,77 @@
+-- Coldridge Valley: stop the parked Milo's Gyro from being boardable by hand.
+--
+-- Turning in 24492 "Pack Your Bags" is meant to be the only way onto the
+-- gyro-copter, and it already is a complete, working chain -- nothing below
+-- touches it:
+--
+--   24492.RewardSpell = 70032
+--     eff0 FORCE_CAST -> 70035, target 25 TARGET_UNIT_TARGET_ANY (the player)
+--     eff1 SCRIPT_EFFECT, base points 70042 (drops the rubble-detect aura)
+--   70035  eff0 SUMMON, MiscValue 37198 (Milo's Gyro), MiscValueB 827,
+--            base points 70036, target 48 TARGET_DEST_CASTER_BACK
+--
+-- SummonProperties 827 is Control 4 = SUMMON_CATEGORY_VEHICLE, so
+-- Spell::EffectSummonType (SpellEffects.cpp:2154) summons a private copy of the
+-- gyro and then casts this effect's base points -- 70036 "Riding Milo's Gyro",
+-- which carries SPELL_AURA_CONTROL_VEHICLE -- from the player onto it. That is
+-- the buff the player sees, and boarding fires
+-- npc_milos_gyro_AI::PassengerBoarded, which summons Milo and flies the Kharanos
+-- path. All of it is data plus the existing C++ AI; none of it goes through
+-- npc_spellclick_spells.
+--
+-- (827 does not appear in SummonProperties.db2's record block. It is in the
+-- file's copy table, cloning row 710 -- Flags 264, Control 4, Faction 0. Any
+-- reader that walks record_count alone will report it missing; this store is 742
+-- records plus 596 copies.)
+--
+-- What is left over is the parked gyro at Anvilmar, guid 10612185, which anyone
+-- who can see it can still click and ride. That is the bug.
+
+-- Why this is a `conditions` row and not npcflag or a delete.
+--
+-- 1. npcflag cannot hold. Vehicle::Vehicle() rewrites it on every spawn, and
+--    says so in its own comment:
+--
+--      // Set or remove correct flags based on available seats. Will overwrite db data (if wrong).
+--      if (UsableSeatNum)
+--          _me->SetFlag64(UNIT_NPC_FLAGS, ... UNIT_NPC_FLAG_SPELLCLICK);   // Vehicle.cpp:52
+--
+--    Milo's Gyro is VehicleId 581 with usable seats, so creature_template.npcflag
+--    is overwritten at spawn no matter what it says. `.npc info` reporting
+--    npcFlags 16777216 against a DB column reading 0 is exactly this.
+--
+-- 2. Deleting the npc_spellclick_spells row makes it worse, not better.
+--    Player::CanSeeSpellClickOn returns true unconditionally for a flagged
+--    creature that has no rows at all:
+--
+--      SpellClickInfoMapBounds clickPair = sObjectMgr->GetSpellClickInfoMapBounds(c->GetEntry());
+--      if (clickPair.first == clickPair.second)
+--          return true;                                    // Player.cpp:27501-27503
+--
+-- So the row has to stay and the click has to be refused by a condition. Both
+-- entry points consult ConditionMgr -- Player::CanSeeSpellClickOn (the cursor)
+-- at Player.cpp:27510 and Unit::HandleSpellClick (the actual board) at
+-- Unit.cpp:13295 -- so one row closes both.
+--
+-- Keying, which is the easy thing to get backwards: ConditionMgr stores spell
+-- click conditions as SpellClickEventConditionStore[SourceGroup][SourceEntry]
+-- (ConditionMgr.cpp:1232), i.e. SourceGroup is the *creature entry* and
+-- SourceEntry is the *spell id*.
+--
+-- The condition is deliberately one that no clicker can satisfy. There is no
+-- spellclick on this gyro on retail; since the row cannot be removed, an
+-- always-false condition is how that is expressed. CONDITION_ALIVE (36) against
+-- ConditionTarget 0 -- the clicker -- with NegativeCondition set reads "the
+-- clicker is dead", and Condition::Meets flips it (ConditionMgr.cpp:530) to a
+-- flat refusal for anyone able to click at all.
+--
+-- This also covers the summoned flight copy, since HandleSpellClick keys on the
+-- vehicle's creature entry either way, but that copy is boarded by 70036 rather
+-- than by a click, so nothing about the ride changes.
+DELETE FROM `conditions` WHERE `SourceTypeOrReferenceId`=18 AND `SourceGroup`=37198 AND `SourceEntry`=46598;
+INSERT INTO `conditions` (`SourceTypeOrReferenceId`, `SourceGroup`, `SourceEntry`, `SourceId`, `ElseGroup`, `ConditionTypeOrReference`, `ConditionTarget`, `ConditionValue1`, `ConditionValue2`, `ConditionValue3`, `NegativeCondition`, `ErrorType`, `ErrorTextId`, `ScriptName`, `Comment`) VALUES
+(18, 37198, 46598, 0, 0, 36, 0, 0, 0, 0, 1, 0, 0, '', 'Milo''s Gyro - never boardable by clicking; the 24492 turn-in summons a copy and casts 70036');
+
+-- Left alone on purpose: npc_spellclick_spells (37198, 46598) -- see point 2.
+
+-- @touched: conditions (18,37198,46598)

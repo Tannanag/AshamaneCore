@@ -489,6 +489,77 @@ public:
 };
 
 /*######
+# spell_throw_priceless_artifact
+# 69897 - Throw Priceless Artifact
+######*/
+
+enum ThrowPricelessArtifact
+{
+    SPELL_CREATE_PRICELESS_ROCKJAW_ARTIFACT = 104959,
+    QUEST_MAKE_HAY_WHILE_THE_SUN_SHINES     = 24486
+};
+
+// A Rockjaw Scavenger flings this at whoever pulls it from 5 to 15 yards away,
+// and the artifact quest (24486) is fed entirely by the throws that connect.
+//
+// The chain that delivers the item is broken in the data:
+//
+//   69897 eff 0   SCHOOL_DAMAGE     9 + 1d5,   ImplicitTarget 6 (TARGET_UNIT_TARGET_ENEMY)
+//   69897 eff 1   TRIGGER_MISSILE   -> 104959, ImplicitTarget 0 (none)
+//  104959 eff 0   CREATE_ITEM       item 49751 (Priceless Rockjaw Artifact)
+//
+// Effect 1 names no implicit target, so no target in m_UniqueTargetInfo carries
+// its effect mask and it is dispatched as SPELL_EFFECT_HANDLE_HIT rather than
+// HANDLE_HIT_TARGET. Spell::EffectTriggerMissileSpell then takes its no-target
+// branch and does targets.SetUnitTarget(m_caster), which points 104959 back at
+// the trogg; TARGET_UNIT_TARGET_ENEMY cannot resolve a creature onto itself, and
+// SPELL_EFFECT_CREATE_ITEM needs a player either way. The artifact has never
+// reached anybody.
+//
+// Suppress that self-cast and re-aim the trigger at the unit effect 0 hit, so
+// the item arrives with the missile instead of on some parallel path.
+class spell_throw_priceless_artifact : public SpellScriptLoader
+{
+public:
+    spell_throw_priceless_artifact() : SpellScriptLoader("spell_throw_priceless_artifact") { }
+
+    class spell_throw_priceless_artifact_SpellScript : public SpellScript
+    {
+        PrepareSpellScript(spell_throw_priceless_artifact_SpellScript);
+
+        bool Validate(SpellInfo const* /*spellInfo*/) override
+        {
+            return ValidateSpellInfo({ SPELL_CREATE_PRICELESS_ROCKJAW_ARTIFACT });
+        }
+
+        void GiveArtifact(SpellEffIndex /*effIndex*/)
+        {
+            Player* player = GetHitPlayer();
+            if (!player || player->GetQuestStatus(QUEST_MAKE_HAY_WHILE_THE_SUN_SHINES) != QUEST_STATUS_INCOMPLETE)
+                return;
+
+            GetCaster()->CastSpell(player, SPELL_CREATE_PRICELESS_ROCKJAW_ARTIFACT, true);
+        }
+
+        void SuppressTriggerOnSelf(SpellEffIndex effIndex)
+        {
+            PreventHitDefaultEffect(effIndex);
+        }
+
+        void Register() override
+        {
+            OnEffectHitTarget += SpellEffectFn(spell_throw_priceless_artifact_SpellScript::GiveArtifact, EFFECT_0, SPELL_EFFECT_SCHOOL_DAMAGE);
+            OnEffectHit += SpellEffectFn(spell_throw_priceless_artifact_SpellScript::SuppressTriggerOnSelf, EFFECT_1, SPELL_EFFECT_TRIGGER_MISSILE);
+        }
+    };
+
+    SpellScript* GetSpellScript() const override
+    {
+        return new spell_throw_priceless_artifact_SpellScript();
+    }
+};
+
+/*######
 # spell_low_health
 # 76143 - Low Health
 ######*/
@@ -927,5 +998,6 @@ void AddSC_dun_morogh_area_coldridge_valley()
     new spell_a_trip_to_ironforge_quest_complete();
     new spell_follow_that_gyrocopter_quest_start();
     new spell_low_health();
+    new spell_throw_priceless_artifact();
     RegisterCreatureAI(npc_joren_ironstock);
 }

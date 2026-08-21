@@ -1,0 +1,63 @@
+-- Coldridge Valley: give Grik'nir the Cold the aura he wears on retail.
+--
+-- Grik'nir (808) stands at the head of the Frostmane cave with nothing on him.
+-- On retail he carries a permanent, self-applied aura, and it is the visible
+-- effect around him.
+--
+-- The spell is 80631 "Cold Heart":
+--
+--   80631  eff0  APPLY_AURA, aura 4 SPELL_AURA_DUMMY, ImplicitTarget 1
+--                TARGET_UNIT_CASTER, base points 0
+--          SpellMisc  CastingTimeIndex 1 (instant), DurationIndex 21
+--
+-- SpellDuration 21 is (-1, -1) -- infinite -- which is the same duration index
+-- the two auras this DB already carries in the zone use (70111 on the Rockjaw
+-- Scavenger, 44366 on the Snow Tracker Wolf). A dummy aura with no icon and no
+-- duration does nothing by itself; what it is there for is the spell visual
+-- hanging off it, which is what the player sees.
+--
+-- Where this came from, since wowhead's NPC page carries no ability list for
+-- him: dump_12.1.0.69382_2026-08-18_17-43-23. WowPacketParser has no opcode
+-- tables for retail 12.1.0, so the dump is raw hex and this was read out of the
+-- payloads directly (see PACKET-DUMP-HANDOFF.md for the method and the
+-- ObjectGuid layout).
+--
+--   * Opcode 0x670011 is SMSG_AURA_UPDATE for this build. Its first two bytes
+--     are a bit header -- 1 bit UpdateAll, then 9 bits of aura count -- followed
+--     by the target's packed ObjectGuid. The count reading is what identifies
+--     it: Grik'nir's create-time packet reads UpdateAll=1 count=1, and the
+--     packet sent as he dies reads UpdateAll=0 count=2 with no aura payload at
+--     all, which is a full removal of the two auras he held at that moment.
+--
+--   * The first aura's SpellID is a plain little-endian uint32 fifteen bytes
+--     past the end of that guid, with SpellXSpellVisualID in the next four.
+--
+--   * That offset was not guessed. It was fixed by decoding creatures whose
+--     auras this server already knows and checking the answers matched:
+--     Rockjaw Scavenger 37105 -> 70111, Snow Tracker Wolf 41478 -> 44366,
+--     Crag Boar 1125 -> 44365, Wounded Coldridge Mountaineer 37080 -> 76143
+--     (the SPELL_LOW_HEALTH of our own zone script), the parked Milo Geartwinge
+--     37113 and Milo's Gyro 37169 -> 70045, and the flight-copy Milo 37518 ->
+--     46598 Ride Vehicle. Every one of those is independently verifiable here
+--     and every one came out right.
+--
+--   * Grik'nir's guid in that dump is entry 808 counter 311441. His creation
+--     packet gives SpellID 80631, SpellXSpellVisualID 35260 -- a real visual
+--     kit, unlike the 0 that 44366 and 76143 carry, which is consistent with
+--     this being the one that is meant to be seen. It arrives with UpdateAll
+--     set and a count of 1, i.e. that single aura is his entire aura set from
+--     the moment he spawns.
+--
+-- Deliberately not included: 6957, which the same stream shows arriving on him
+-- at 17:51:45 with UpdateAll=0 partway through the fight and going away when he
+-- dies. That is a combat aura (APPLY_AURA, aura 29, 5 base points), not
+-- something he stands around wearing, so it belongs to a script if it is ever
+-- wanted, not to his addon.
+--
+-- Entry scope rather than guid scope: 808 has exactly one spawn (guid 167310),
+-- the aura is a property of the creature rather than of that placement, and
+-- `creature_template_addon` already holds a row for him with an empty `auras`
+-- column -- which is also where the three reference auras above live.
+UPDATE `creature_template_addon` SET `auras`='80631' WHERE `entry`=808; -- Grik'nir the Cold - Cold Heart
+
+-- @touched: creature_template_addon 808

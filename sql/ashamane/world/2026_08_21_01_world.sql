@@ -1,0 +1,21 @@
+-- Coldridge Valley: stand Coldridge Mountaineer 166968 still again.
+--
+-- 2026_08_18_01_world.sql gave this spawn MovementType 1 with an 11 yd wander,
+-- as the one Mountaineer of twelve that "roams rather than patrols in this
+-- sniff". It does not roam. The 11 yd figure was derived from a single observed
+-- lap that actually belongs to 166975, the Mountaineer 9.7 yd away, which does
+-- have a route (creature_addon path_id 1669750). The centroid matcher paired
+-- that lap to the wrong spawn at 1.71 yd and turned another NPC's patrol into
+-- this one's roam radius.
+--
+-- 166968 never had a path and never had a radius. Its state before the wander
+-- pass is in the snapshot that pass wrote,
+-- /home/serverproject/coldridge-reverts/backup-20260818-230731-2026_08_18_01_world/creature.tsv,
+-- whose columns are (guid, id, MovementType, wander_distance, waypoint count)
+-- per wpp_apply.py:76 -- the row reads `166968  853  0  0  0`.
+--
+-- Scoped to the one guid. The other 46 spawns in that file are unaffected and
+-- 166975 keeps its route.
+UPDATE `creature` SET `MovementType`=0, `wander_distance`=0 WHERE `guid`=166968; -- Coldridge Mountaineer
+
+-- @touched: creature 166968

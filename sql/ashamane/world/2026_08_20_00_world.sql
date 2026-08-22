@@ -1,0 +1,103 @@
+-- Coldridge Valley: make the Frostmane trolls attackable again, without making
+-- them aggressive.
+--
+-- Reported symptom: Frostmane Troll Whelps cannot be right-clicked to start a
+-- fight, though they can be targeted and hit with an ability. Grik'nir the Cold
+-- behaves the same way; Rockjaw Goons and the Wayward Fire Elemental are fine.
+--
+-- That split is the whole diagnosis. All four carry npcflag 2, unit_flags 0,
+-- unit_flags2 2048, unit_flags3 0 and flags_extra 0 -- byte-identical on every
+-- flag column -- so the flags are not it. The only column that differs is
+-- `faction`, and it separates the four exactly:
+--
+--   entry  name                    faction  Faction  Flags   FactionGroup  EnemyGroup  right-click
+--   -----  ----------------------  -------  -------  ------  ------------  ----------  -----------
+--     706  Frostmane Troll Whelp       190      148  0x0                0           0  no
+--     808  Grik'nir the Cold          2136      148  0x1                0           0  no
+--   37073  Rockjaw Goon                594       32  0x0                8           0  yes
+--   37112  Wayward Fire Elemental       14       14  0x0                8           1  yes
+--
+-- A player's faction template carries EnemyGroup 12 (FACTION_MASK_HORDE |
+-- FACTION_MASK_MONSTER), and FactionTemplateEntry::IsHostileTo
+-- (src/server/game/DataStores/DB2Structure.h:1079) ends with
+-- `(EnemyGroup & entry->FactionGroup) != 0`. So FactionGroup 8 reads hostile and
+-- FactionGroup 0 does not, and a unit the client does not consider hostile is not
+-- attacked by a right-click -- while an ability cast at it still works, which is
+-- exactly what was observed.
+--
+-- The deeper problem is what faction 190 actually is. It is not a Frostmane
+-- faction: FactionTemplate 190 points at Faction 148, the generic wildlife
+-- faction, and the other templates on 148 are shared with Toad, Roach, Cat and
+-- Strand Crab. Three Coldridge trolls were given a critter template.
+--
+-- But the fix is not to give them the Frostmane faction. All three templates on
+-- Faction 33 "Frostmane Trolls" -- 37, 107 and 2264 -- carry FactionGroup 8, so
+-- every one of them is hostile-on-sight. Setting 37 was tried first and made the
+-- trolls red and aggressive, which is not what this zone wants: they should be
+-- neutral, and merely attackable.
+--
+-- Sorting the templates by observed behaviour shows what actually governs it:
+--
+--   tmpl   Faction  Flags    FactionGroup  0x400  used by                      behaviour
+--   -----  -------  -------  ------------  -----  ---------------------------  ---------------------------
+--     190      148  0x0                 0     no  the three trolls (before)    neutral, NOT right-clickable
+--    2136      148  0x1                 0     no  Grik'nir (before)            neutral, NOT right-clickable
+--     189        7  0x400               0    yes  708 Small Crag Boar          neutral, right-clickable
+--      36       32  0x401               0    yes  707 Trogg, 37105 Scavenger,  neutral, right-clickable
+--                                                 1116 Ambusher
+--      37       33  0x1                 8     no  (tried, reverted)            HOSTILE, red
+--
+-- Two independent bits, then. FactionGroup decides hostile-vs-neutral, through
+-- FactionTemplateEntry::IsHostileTo (DB2Structure.h:1079) ending in
+-- `(EnemyGroup & entry->FactionGroup) != 0` against the player's EnemyGroup of 12
+-- (FACTION_MASK_HORDE | FACTION_MASK_MONSTER). And Flags 0x400 is what makes a
+-- neutral unit answer a right-click at all.
+--
+-- 0x400 appears nowhere in the core -- enum FactionTemplateFlags
+-- (src/server/game/DataStores/DBCEnums.h:673-678) knows only 0x800 PVP,
+-- 0x1000 CONTESTED_GUARD and 0x2000 HOSTILE_BY_DEFAULT -- so it is read purely
+-- client-side, which is why no amount of reading server logic explains the
+-- symptom. It is also why an ability still worked: the server was always willing
+-- to let the spell through, and only the client's right-click default action was
+-- withheld.
+--
+-- So: FactionGroup 0 to stay neutral, plus 0x400 to stay attackable. Faction 189
+-- is exactly that, and it is what Small Crag Boar already uses a few yards away
+-- in the same zone.
+UPDATE `creature_template` SET `faction`=189 WHERE `entry` IN (706, 946, 37507, 808);
+-- 706 Frostmane Troll Whelp, 946 Frostmane Novice, 37507 Frostmane Blade, 808 Grik'nir the Cold
+
+-- Accepted with this: 189 has an empty Friend[] and FriendGroup 0, so two trolls
+-- are neutral to each other rather than friendly, and a whelp will not run to
+-- help the one being attacked. Faction 36 would have given them assist, but only
+-- by making them friendly to the Rockjaw troggs, which is worse. A Frostmane
+-- template that is neutral *and* attackable does not exist in this client's
+-- FactionTemplate.db2; making one means a DB2 hotfix, which is a bigger change
+-- than this bug warrants.
+--
+-- Grik'nir (808) was on template 2136 rather than 190, but it is the same
+-- mistake: Faction 148 again, FactionGroup 0, differing only in Flags 0x1 and a
+-- Friend entry. He is the named Frostmane elite for quest 218 "Ice and Fire" and
+-- belongs with his own kind.
+--
+-- Scope: these four spawn only in areas 132 (Coldridge Valley) and 6137
+-- (Frostmane Hold, inside the valley) -- 34+1, 14, 1+30 and 1, eighty-one spawns
+-- in total, none anywhere else on any map. So a template-level faction change
+-- cannot reach another zone.
+--
+-- 2026_08_19_03_world.sql noted that all three Coldridge Frostmane were
+-- IsNeutralToAll and so would never start a fight (Creature::CanStartAttack,
+-- Creature.cpp:1717). That stays true, and is now deliberate: 189 is also
+-- IsNeutralToAll. They are meant to be neutral; only the right-click was broken.
+--
+-- Deliberately not changed: npcflag 2 (UNIT_NPC_FLAG_QUESTGIVER) on 706 and 808.
+-- It is wrong -- `creature_queststarter` lists both as starters for the very
+-- quests they are the kill objective of (706 -> 182 "The Troll Menace",
+-- 808 -> 218 "Ice and Fire"), while the real giver of both is 786 Grelin
+-- Whitebeard -- but it is not what blocked the right-click, since 37073 and
+-- 37112 carry the same flag and work. Cleaning it up is a separate change, and
+-- it has to delete the `creature_queststarter` rows in the same file or
+-- ObjectMgr::LoadCreatureQuestStarters (ObjectMgr.cpp:8098) logs an sql.sql
+-- error on every startup.
+
+-- @touched: creature_template 706,808,946,37507

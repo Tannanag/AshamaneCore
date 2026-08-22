@@ -1,0 +1,56 @@
+-- Coldridge Valley: take the two Rockjaw Invaders off the ground behind Joren
+-- Ironstock.
+--
+-- Joren holds the pass facing up it, guns down the invaders his vignette summons,
+-- and is meant to have his back to the valley. Two of the thirteen static Rockjaw
+-- Invader spawns re-added by 2026_08_14_02_world.sql stand behind him instead of
+-- in front, which reads as him ignoring two troggs breathing down his neck --
+-- and he does ignore them, deliberately: npc_joren_ironstock::CanAIAttack
+-- (zone_dun_morogh_area_coldridge_valley.cpp:601) refuses to let him pick a
+-- static invader as a victim, because those are the players' quest mobs.
+--
+-- "Behind" is not a judgement call here. Joren (guid 166998) stands at
+-- -6228.31, 331.55 with orientation 2.60 rad, so he faces (-0.857, +0.516).
+-- Taking the dot product of that with the unit vector to each nearby static
+-- invader:
+--
+--   guid    position              dot     reading
+--   ------  --------------------  ------  ---------------------
+--   167366  -6204.60, 304.65      -0.95   directly behind him
+--   167371  -6209.60, 310.08      -0.95   directly behind him
+--   167268  -6296.17, 326.16      +0.98   in front
+--   167282  -6258.61, 404.79      +0.95   in front
+--   167372  -6237.68, 375.52      +0.68   in front
+--   (the other 8)                 +0.7..+0.98
+--
+-- Only two are behind, and they are the two the report named.
+DELETE FROM `creature`       WHERE `guid` IN (167366, 167371); -- Rockjaw Invader 37070, behind Joren Ironstock
+DELETE FROM `creature_addon` WHERE `guid` IN (167366, 167371);
+
+-- The addon delete is belt-and-braces: neither guid has a row today. It is here
+-- so a later pass that gives the invaders addons cannot leave two orphans
+-- behind, which ObjectMgr::LoadCreatureAddons would log as
+-- "creature_addon has a record for invalid creature guid".
+--
+-- Deliberately NOT paired with a core change. RockjawInvaderSpawnPoints[6] in
+-- src/server/scripts/EasternKingdoms/zone_dun_morogh_area_coldridge_valley.cpp
+-- is 167366's position verbatim --
+--
+--     { -6204.599f, 304.64932f, 388.9596f, 2.362043619155883789f }
+--
+-- because the array was lifted from these same static spawns. That entry stays.
+-- The summon is the point: Joren's vignette is meant to be the only source of
+-- invaders here, and one arriving at his back is a charge he has to turn and
+-- answer, not scenery he is ignoring. What was wrong was having them stand there
+-- permanently -- npc_joren_ironstock::CanAIAttack refuses static invaders as
+-- victims, so the two parked behind him could never be answered at all.
+--
+-- Index 2 (-6208.724, 354.3229) sits about 100 degrees off his facing -- beside
+-- him rather than behind. Also left in, for the same reason.
+--
+-- The other eleven static invaders stay. They are the kill objective for quest
+-- 24469 "Hold the Line!" (6 required) and so the players' business, not Joren's.
+-- Eleven is still comfortably above six, and the vignette summons more.
+
+-- @touched: creature 167366,167371
+-- @touched: creature_addon 167366,167371

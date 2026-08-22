@@ -1,0 +1,104 @@
+-- Coldridge Valley: the wolves stop reading as hostile, Boar Haunches stop
+-- being the slowest half of a two-part collection quest, and the troll whelps
+-- stand and fight.
+--
+-- Three template-level edits on beasts and whelps. All four entries touched
+-- here spawn only inside the valley -- counting spawns inside the sniff box
+-- (map 0, x -6600..-5900, y 100..900) against every other spawn in the game:
+--
+--   entry  name                    in Coldridge   elsewhere
+--   -----  ----------------------  ------------   ---------
+--     704  Ragged Timber Wolf                15           0
+--     705  Ragged Young Wolf                 39           0
+--     706  Frostmane Troll Whelp             35           0
+--     708  Small Crag Boar                   48           0
+--
+-- so a change to `creature_template` cannot leak into another zone the way an
+-- entry-wide `creature` update would.
+
+-- 1. Ragged Timber Wolf and Ragged Young Wolf show a red name frame.
+--
+-- Nameplate colour is computed client-side from UNIT_FIELD_FACTIONTEMPLATE
+-- against FactionTemplate.db2. There is no creature_template column for it, so
+-- `faction` is the only lever the server has.
+--
+-- Both wolves are on faction 32. Small Crag Boar -- the same kind of mob, in
+-- the same zone, feeding the same quest, and not complained about -- is on 189.
+-- The raw db2 rows:
+--
+--   id=32   Faction=29  Flags=0x10   Enemies=(28,0,0,0)  Friend=()  FG=0 FrG=0 EnG=0
+--   id=189  Faction=7   Flags=0x400  Enemies=()          Friend=()  FG=0 FrG=0 EnG=0
+--
+-- Neither is hostile to players: Unit::GetFactionReactionTo returns REP_NEUTRAL
+-- for both, since neither has the player's faction in Enemies[], neither has
+-- FACTION_TEMPLATE_FLAG_HOSTILE_BY_DEFAULT (0x2000), and both have EnemyGroup 0
+-- so IsHostileToPlayers() is false. The single structural difference is
+-- FactionTemplateEntry::IsNeutralToAll (src/server/game/DataStores/DB2Structure.h:1095),
+-- which requires every Enemies[] slot to be zero: 189 passes, 32 fails, because
+-- wolves are enemies of faction 28.
+--
+-- Ruled out first, so this is the remaining candidate rather than a guess:
+--   * spawn overrides -- all 15 timber-wolf and 39 young-wolf spawns have
+--     npcflag, unit_flags, unit_flags2 and dynamicflags at 0.
+--   * unit_flags 8 (UNIT_FLAG_PVP_ATTACKABLE) on the template. Stonetusk Boar
+--     (113), unambiguously yellow in Elwynn, carries the same bit.
+--   * creature_template_addon auras -- both rows are bare defaults.
+--
+-- Accepted side effect: 189 is neutral to everything, so the wolves will no
+-- longer hunt critters. Nothing in the valley depends on that.
+UPDATE `creature_template` SET `faction`=189 WHERE `entry` IN (704, 705); -- Ragged Timber Wolf, Ragged Young Wolf
+
+-- 2. "All the Other Stuff" (24475) -- Boar Haunch drops too rarely.
+--
+-- The quest wants 3x 49747 Boar Haunch and 4x 49748 Ragged Wolf Hide. What the
+-- loot table gives today, and what that costs in kills:
+--
+--   item   source                     Chance    kills for the objective
+--   -----  -------------------------  -------   -----------------------
+--   49747  708 Small Crag Boar         39.36%   ~8
+--   49748  704 Ragged Timber Wolf      69.75%   ~6 across both wolves
+--   49748  705 Ragged Young Wolf       62.46%
+--
+-- Both rows are ungrouped (GroupId 0), so each is an independent roll, and
+-- LootStoreItem::Roll (src/server/game/Loot/LootMgr.cpp:292) applies a quality
+-- multiplier that is 1.0 for these items at the default Rate.Drop.Item.* of 1 --
+-- so Chance is the literal drop percentage, not a weight.
+--
+-- The boar half is the outlier: it costs nearly as many kills for 3 as the
+-- wolves cost for 4. Bringing it to the wolves' rate rather than to certainty
+-- keeps it a collection quest.
+UPDATE `creature_loot_template` SET `Chance`=70 WHERE `Entry`=708 AND `Item`=49747; -- Small Crag Boar -> Boar Haunch
+
+-- The wolf hides are left as they are. So are the other 24 sources of 49747
+-- across the game, all at 0.0009%-1.8%: they are aggregation noise from the
+-- base dump, and 708 is the only source inside the valley.
+
+-- 3. Frostmane Troll Whelps run away at 15% health.
+--
+-- Of the troll entries actually spawned in the valley -- 706 Frostmane Troll
+-- Whelp (35 spawns), 37507 Frostmane Blade (29), 946 Frostmane Novice (13) --
+-- only 706 has flee behaviour:
+--
+--   (706, 0, 0, event 2 SMART_EVENT_HEALT_PCT 0-15%, action 25 SMART_ACTION_FLEE_FOR_ASSIST)
+--   (706, 0, 1, event 2 SMART_EVENT_HEALT_PCT 0-15%, action  1 SMART_ACTION_TALK)
+--
+-- SMART_ACTION_FLEE_FOR_ASSIST is the only caller of
+-- Creature::DoFleeToGetAssistance (src/server/game/Entities/Creature/Creature.cpp:800)
+-- anywhere in the core, and there is no flags_extra bit that suppresses it --
+-- CREATURE_FLAG_EXTRA_NO_FLEE does not exist in this core's enum
+-- (src/server/game/Entities/Creature/CreatureData.h:257-299). So deleting the
+-- row is the fix, not a flag.
+DELETE FROM `smart_scripts` WHERE `entryorguid`=706 AND `source_type`=0 AND `id`=0; -- Frostmane Troll Whelp - Flee at 15% HP
+
+-- Row 1 stays: the bark at 15% still reads fine on a whelp that holds its
+-- ground, and it is what retail plays. SAI ids do not need to be contiguous,
+-- so nothing is renumbered.
+--
+-- The other Frostmane entries carrying the same flee row -- 1121 Snowstrider,
+-- 1122 Hideskinner, 1123 Headhunter, 1124 Shadowcaster, 1397 Seer, 41121 Seer,
+-- 41251 Builder -- and 1116 Rockjaw Ambusher all spawn outside the valley and
+-- are left alone.
+
+-- @touched: creature_template 704,705
+-- @touched: creature_loot_template 708
+-- @touched: smart_scripts 706

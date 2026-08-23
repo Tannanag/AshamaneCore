@@ -1,0 +1,46 @@
+-- Northshire Valley: slow the Blackrock Spies to the pace the sniff measured.
+--
+-- Timing every monster-move in dump_12.1.0.69404 with a leg over 2 yd, and
+-- dividing distance by the duration the server sent with it:
+--
+--   creature                legs   median yd/s   p25     p75     implied speed_walk
+--   ---------------------  -----  ------------  ------  ------  ------------------
+--   Blackrock Invader       1176         2.499   2.497   2.500              0.9996
+--   Goblin Assassin         1448         2.497   2.494   2.499              0.9990
+--   Northshire Guard         189         2.485   2.433   2.498              0.9939
+--   Blackrock Spy           1943         2.343   2.219   2.493              0.9370
+--
+-- The three controls all land on 1.0 with a tight spread, and that is what makes
+-- the fourth row worth acting on rather than reading as timing noise: the spy is
+-- the only creature in the zone measurably slower, and it is slower across 1943
+-- legs. Base walk speed is 2.5 yd/s, so 2.343 / 2.5 = 0.937.
+UPDATE `creature_template` SET `speed_walk`=0.937 WHERE `entry`=49874;
+
+-- 0.937 is a 6% reduction, which is real but subtle in game. If the spies should
+-- visibly creep rather than merely walk a little slow, this is the one number to
+-- turn -- but turning it is a deliberate departure from the sniff rather than a
+-- correction to it, and the sniff is unusually clear here.
+--
+--   speed_walk   yd/s    feel
+--   ----------   -----   ----------------------------------------
+--        1.000   2.500   the zone's normal walk (what they had)
+--        0.937   2.343   what retail measures  <-- set here
+--        0.850   2.125   noticeably deliberate
+--        0.750   1.875   clearly sneaking
+--
+-- Scope: entry 49874 has 22 spawns, all in zone 6170 on map 0, and exists
+-- nowhere else in the world, so a template-level speed change cannot reach
+-- another zone.
+--
+-- Deliberately not done: no waypoint delays. wpp_patrols reported "0 node(s)
+-- with a delay" on all four spy routes, where the same pass did find real pauses
+-- on both Northshire Guard routes and kept them (1729-2243 ms). The spies were
+-- observed walking their beats without stopping, so a pause at the turnarounds
+-- would be invention dressed as restoration, and the guards' delays are the
+-- proof that the tool would have reported one had it existed.
+--
+-- No `-- @touched:` line: this changes one column on one creature_template row
+-- and names no spawns, so wpp_apply.py would abort resolving the ids against
+-- `creature` (see 2026_08_22_03). Apply with mysql directly. The undo is:
+--
+--   UPDATE `creature_template` SET `speed_walk`=1 WHERE `entry`=49874;

@@ -247,7 +247,12 @@ public:
         {
             _clicker = nullptr;
 
-            me->SetFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_NONE);
+            // Clear it, do not OR it in: UNIT_NPC_FLAG_NONE is 0, so SetFlag here
+            // was a no-op and the soldier kept the SPELLCLICK flag it inherits from
+            // creature_template.npcflag. MoveInLineOfSight below is what decides
+            // whether this soldier is clickable, and it can only be trusted if the
+            // flag starts cleared.
+            me->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
             me->SetStandState(UNIT_STAND_STATE_DEAD);
         }
 

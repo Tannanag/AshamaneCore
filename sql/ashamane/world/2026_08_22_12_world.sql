@@ -1,0 +1,52 @@
+-- Northshire Valley: put the seven female spyglass watchers on the male spy
+-- displays, which pose correctly while kneeling.
+--
+-- Reported symptom: the kneeling watchers aim their spyglass at the ground -- but
+-- only the female ones. The male watchers a few yards away are correct.
+--
+-- That split is the diagnosis, and it holds across the whole entry. Blackrock Spy
+-- has four displays, and every spawn pins one of them in creature.modelid:
+--
+--   display  ModelID  gender  watchers (kneel)  patrollers (stand)
+--   -------  -------  ------  ----------------  ------------------
+--     36652       51  male                   3                   1
+--     36653       51  male                   3                   1
+--     36654       52  female                 2                   1
+--     36655       52  female                 5                   4
+--
+-- Seven of the thirteen watchers are female, and those seven are the ones that
+-- look wrong. The patrollers are unaffected because they stand: there is no
+-- spyglass pose on them to break, which is also why this went unnoticed for so
+-- long and why the male watchers made it look as though the pose was fine.
+--
+-- Worth being clear about what this is NOT. It is not caused by the 92857 aura
+-- added in 2026_08_22_10 -- that aura went on all 13 watchers, male and female
+-- alike, and only the female ones are wrong. Removing it (attempted, then
+-- reverted) cost the transparency and did not fix the pose. The variable is the
+-- model: ModelID 52 does not hold the spyglass correctly from StandState 8, and
+-- ModelID 51 does.
+--
+-- So the seven move to the male displays. The seven are split across both male
+-- variants rather than piled onto one, so the watchers keep the same kind of
+-- 36652/36653 mix they already had -- those two differ in ExtendedDisplayInfoID
+-- (24181 and 24182), so they are visibly distinct spies rather than seven copies.
+UPDATE `creature` SET `modelid`=36652 WHERE `id`=49874 AND `guid` IN (178238,178249,178340,178341);
+UPDATE `creature` SET `modelid`=36653 WHERE `id`=49874 AND `guid` IN (178271,178432,178484);
+
+-- Watchers afterwards: 7 on 36652, 6 on 36653, all male, all kneeling correctly,
+-- all still carrying 80676 for the spyglass and 92857 for the transparency.
+--
+-- Accepted: no female spies among the watchers. The zone keeps them on patrol --
+-- five of the seven patrollers are female (36654 x1, 36655 x4) and are not
+-- touched by this file, so females are still present and still see-through, just
+-- never kneeling behind a spyglass.
+--
+-- Scope: `id`=49874 is pinned and the seven guids are listed out. The six male
+-- watchers and all seven patrollers are untouched, as is creature_template.
+--
+-- No `-- @touched:` line: wpp_apply.py snapshots MovementType, wander_distance,
+-- path_id and orientation but not `modelid`, so its revert would not restore this
+-- column. Apply with mysql directly. The undo is:
+--
+--   UPDATE `creature` SET `modelid`=36654 WHERE `guid` IN (178249,178271);
+--   UPDATE `creature` SET `modelid`=36655 WHERE `guid` IN (178238,178340,178341,178432,178484);

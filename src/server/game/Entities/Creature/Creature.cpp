@@ -2400,6 +2400,16 @@ bool Creature::LoadCreaturesAddon()
 	// UNIT_FIELD_BYTES_1
 	SetStandState(UnitStandStateType(creatureAddon->standState));
 
+	// The VisFlags column was read out of creature_addon and creature_template_addon
+	// by ObjectMgr and then dropped on the floor -- nothing else in the server ever
+	// touched creatureAddon->visFlags, so the column had no effect. It carries
+	// UnitStandFlags, and UNIT_STAND_FLAGS_CREEP is what makes the client draw a unit
+	// translucent, which is otherwise only reachable through a stealth aura -- and a
+	// stealth aura also hides the unit past a short detection radius, which is not the
+	// same thing as looking sneaky.
+	if (creatureAddon->visFlags != 0)
+		SetStandFlags(creatureAddon->visFlags);
+
 	// UNIT_FIELD_BYTES_2 values
 	SetSheath(SheathState(creatureAddon->sheathState));
     

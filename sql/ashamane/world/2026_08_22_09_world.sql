@@ -1,0 +1,69 @@
+-- Northshire Valley: stop the Goblin Assassin claiming to give the quest it is
+-- the objective of, which is what was eating the right-click.
+--
+-- 2026_08_22_03 put entry 50039 on faction template 189 -- FactionGroup 0 plus
+-- Flags 0x400 -- which is what fixed the identical symptom on the Coldridge
+-- Frostmane. The assassins are still not right-clickable, so 189 was necessary
+-- and not sufficient. Comparing 50039 against 706 Frostmane Troll Whelp, which
+-- now works, leaves exactly one difference in the whole of creature_template:
+--
+--   entry  name                   faction  npcflag  unit_flags  unit_flags2  dynamicflags  type
+--   -----  ---------------------  -------  -------  ----------  -----------  ------------  ----
+--     706  Frostmane Troll Whelp      189        0           0         2048             4     7
+--   50039  Goblin Assassin            189        2           0         2048             4     7
+--
+-- npcflag 2 is UNIT_NPC_FLAG_QUESTGIVER (UnitDefines.h:289). On a unit the client
+-- already considers hostile, the right-click default is attack regardless. On a
+-- neutral unit -- which is what FactionGroup 0 makes these, deliberately -- the
+-- questgiver flag takes the default action instead, so the click tries to open a
+-- conversation. There is nothing to open, so it does nothing, while an ability
+-- cast at the same target still lands. That is precisely the reported behaviour.
+--
+-- This also reconciles the note left in 191e02e702, which observed that clearing
+-- npcflag did not make the Coldridge mobs clickable and concluded npcflag was not
+-- the variable. It is not, on its own: 37073 and 37112 carried npcflag 2 and were
+-- always attackable because they sit on FactionGroup 8 and hostility wins the
+-- click, and 946 and 37507 carried npcflag 0 and were still unclickable because
+-- they had not yet been moved to 189. Both bits have to be right at once, which
+-- is only visible now that the faction half is already in place.
+--
+-- The flag is not merely redundant here, it is wrong. creature_queststarter lists
+-- 50039 as the giver of eight quests, and all eight are "They Sent Assassins" --
+-- the quests it is the kill objective of. Same shape as the five Coldridge mobs
+-- in 191e02e702.
+--
+--   quest  LogTitle              50039 is a kill objective of it  real giver and ender
+--   -----  --------------------  -------------------------------  --------------------
+--   28791  They Sent Assassins   yes                              823 Sergeant Willem
+--   28792  They Sent Assassins   yes                              823 Sergeant Willem
+--   28793  They Sent Assassins   yes                              823 Sergeant Willem
+--   28794  They Sent Assassins   yes                              823 Sergeant Willem
+--   28795  They Sent Assassins   yes                              823 Sergeant Willem
+--   28796  They Sent Assassins   yes                              823 Sergeant Willem
+--   28797  They Sent Assassins   yes                              823 Sergeant Willem
+--   29081  They Sent Assassins   yes                              823 Sergeant Willem
+--
+-- Nothing is lost. Sergeant Willem already holds both the creature_queststarter
+-- and creature_questender row for all eight, so every quest keeps a giver and a
+-- turn-in. None is mob-started by design either: all are QuestType 2 with
+-- StartItem 0, so there is no auto-accept path needing a starter on the objective
+-- itself.
+--
+-- Both halves go in one file on purpose, for the reason 191e02e702 gives:
+-- ObjectMgr::LoadCreatureQuestStarters (ObjectMgr.cpp:8098) logs an sql.sql error
+-- for a starter row on a creature without the questgiver flag, so clearing
+-- npcflag while the rows remain trades one problem for a log full of another.
+DELETE FROM `creature_queststarter` WHERE `id`=50039 AND `quest` IN (28791,28792,28793,28794,28795,28796,28797,29081);
+UPDATE `creature_template` SET `npcflag`=0 WHERE `entry`=50039;
+
+-- Scope: all 24 Goblin Assassin spawns are in zone 6170 on map 0 and the entry
+-- exists nowhere else, so neither statement can reach another zone.
+--
+-- No `-- @touched:` line: this names a creature_template entry rather than spawn
+-- guids, so wpp_apply.py would abort resolving them against `creature` (same as
+-- 2026_08_22_03 and _08). Apply with mysql directly. The undo is:
+--
+--   UPDATE `creature_template` SET `npcflag`=2 WHERE `entry`=50039;
+--   INSERT INTO `creature_queststarter` (`id`,`quest`) VALUES
+--   (50039,28791),(50039,28792),(50039,28793),(50039,28794),
+--   (50039,28795),(50039,28796),(50039,28797),(50039,29081);

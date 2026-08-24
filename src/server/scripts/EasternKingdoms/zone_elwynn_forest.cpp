@@ -224,6 +224,14 @@ enum InjuredSoldier
 {
     SPELL_HEAL        = 93072,
     SPELL_HEAL_VISUAL = 93097,
+    // 76143 "Low Health" is a dummy aura whose spell script (spell_low_health,
+    // registered in spell_script_names) drops the target to 10% of max health and
+    // turns health regeneration off. The Wounded Coldridge Mountaineer uses the
+    // same spell the same way. It has to be cast rather than listed in
+    // creature_addon.auras: Creature::LoadCreaturesAddon applies those with
+    // AddAura(), which never runs the spell's OnEffectHitTarget handler, so the
+    // aura would be applied and do nothing.
+    SPELL_LOW_HEALTH  = 76143,
     ITEM_PAXTON_PRAYER_BOOK = 65733,
 
     SAY_INJURED_SOLDIER_FIRST_LINE = 0,
@@ -254,6 +262,11 @@ public:
             // flag starts cleared.
             me->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
             me->SetStandState(UNIT_STAND_STATE_DEAD);
+
+            // Wounded, so show it. Cast last and added to Reset() rather than
+            // replacing anything above: the stand state, the flag handling and
+            // everything OnSpellClick does are unchanged.
+            DoCastSelf(SPELL_LOW_HEALTH);
         }
 
         void OnSpellClick(Unit* Clicker, bool& /*result*/) override
@@ -271,6 +284,15 @@ public:
                 me->CastSpell(me, SPELL_HEAL_VISUAL, true);
                 me->RemoveFlag(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
                 me->SetStandState(UNIT_STAND_STATE_STAND);
+
+                // Actually heal him. Undoes the three things SPELL_LOW_HEALTH did
+                // and nothing else: drop the aura, turn regeneration back on --
+                // spell_low_health cleared the flag and only this puts it back --
+                // and fill the health bar. Added alongside the existing visual,
+                // stand state, salute and escort, none of which change.
+                me->RemoveAurasDueToSpell(SPELL_LOW_HEALTH);
+                me->setRegeneratingHealth(true);
+                me->SetFullHealth();
 
                 me->GetScheduler().Schedule(Milliseconds(1000), [this, playerGUID](TaskContext /*task*/)
                     {

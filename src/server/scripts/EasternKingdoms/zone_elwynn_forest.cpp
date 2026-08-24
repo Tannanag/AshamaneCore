@@ -26,6 +26,7 @@
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
 #include "ScriptedEscortAI.h"
+#include "SpellMgr.h"
 #include "ObjectMgr.h"
 #include "ScriptMgr.h"
 #include "World.h"
@@ -514,7 +515,8 @@ public:
 
 enum eSpellQuestExtincteur
 {
-    NPC_FIRE = 42940,
+    NPC_FIRE                = 42940,
+    SPELL_FIRE_EXTINGUISHER = 80209,
 };
 
 class spell_quest_extincteur : public SpellScriptLoader
@@ -526,26 +528,42 @@ public:
     {
         PrepareSpellScript(spell_quest_extincteur_SpellScript);
 
-        void OnDummy(SpellEffIndex /*effIndex*/)
+        // Hand back the "Fire Extinguisher" buff (80209) when the player uses the
+        // extinguisher, if they are somewhere it belongs and do not already have it.
+        //
+        // 80209 carries SpellCastingRequirements.RequiredAreasID 2666, so
+        // Player::UpdateAreaDependentAuras strips it the moment the player leaves the
+        // starting area -- and nothing anywhere put it back, which left the buff
+        // unrecoverable for the rest of the quest once you stepped out.
+        //
+        // What this script does NOT do any more is give kill credit or despawn the
+        // fire. The SmartAI on 42940 already does both, and this doing it as well was
+        // the double credit fixed in 2026_08_22_17_world.sql. It also despawned the
+        // fire instantly, which cut off the Steam effect that SmartAI casts.
+        void HandleCast()
         {
-            Unit* caster = GetCaster();
-            Creature* fire = GetHitCreature();
-
-            if (!caster || !fire)
+            Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+            if (!player)
                 return;
 
-            if (fire->GetEntry() != NPC_FIRE)
+            if (player->HasAura(SPELL_FIRE_EXTINGUISHER))
                 return;
 
-            if (Player* player = caster->ToPlayer())
-                player->KilledMonsterCredit(NPC_FIRE, fire->GetGUID());
+            SpellInfo const* buff = sSpellMgr->GetSpellInfo(SPELL_FIRE_EXTINGUISHER);
+            if (!buff)
+                return;
 
-            fire->DespawnOrUnsummon();
+            // Ask the buff itself whether it belongs here rather than hardcoding an
+            // area id, so this keeps matching whatever RequiredAreasID 2666 contains.
+            if (buff->CheckLocation(player->GetMapId(), player->GetZoneId(), player->GetAreaId(), player) != SPELL_CAST_OK)
+                return;
+
+            player->CastSpell(player, SPELL_FIRE_EXTINGUISHER, true);
         }
 
         void Register() override
         {
-            OnEffectHitTarget += SpellEffectFn(spell_quest_extincteur_SpellScript::OnDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+            OnCast += SpellCastFn(spell_quest_extincteur_SpellScript::HandleCast);
         }
     };
 

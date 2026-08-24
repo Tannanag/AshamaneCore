@@ -1,0 +1,43 @@
+-- Northshire Vineyards: bind spell_quest_extincteur back to "Spray Water", now
+-- that it hands the Fire Extinguisher buff back instead of duplicating credit.
+--
+-- 2026_08_22_17_world.sql removed this binding because the script gave kill
+-- credit for 42940 and despawned the fire, both of which the SmartAI on 42940
+-- already did -- so one cast of 80208 counted twice and "Extinguishing Hope"
+-- finished at four fires instead of eight.
+--
+-- The script has since been rewritten to do neither of those things. It now only
+-- reapplies 80209 "Fire Extinguisher", so the binding is safe to restore and the
+-- credit stays where 2026_08_22_17 left it: entirely with SmartAI, which also
+-- keeps the Steam effect and the 1900 ms despawn the old script was cutting off.
+--
+-- The problem it now solves: 80209 carries SpellCastingRequirements.RequiredAreasID
+-- 2666, so Player::UpdateAreaDependentAuras strips the buff the moment the player
+-- leaves the starting area. Nothing anywhere put it back, so once you stepped out
+-- the buff was gone for the rest of the quest.
+--
+-- Two DB-only routes were tried first and neither works here:
+--
+--  * spell_linked_spell (80208 -> 80209, SPELL_LINK_CAST). Spell.cpp:3494 casts
+--    the linked spell as `CastSpell(m_targets.GetUnitTarget() ? ... : m_caster,
+--    id, true)`. Spray Water is cast at a fire, so the buff would land on the
+--    fire trigger rather than the player -- and being triggered it skips
+--    CheckCast, so the area requirement would not be enforced either.
+--  * spell_area. It would reapply the buff on entering the area, which is the
+--    idiomatic mechanism and is what 84459 uses a few rows away for "Fear No
+--    Evil" -- but it keys off area entry, not off using the extinguisher, which
+--    is the trigger asked for here.
+--
+-- The script checks all three conditions the request named: caster is a player,
+-- does not already have 80209, and passes SpellInfo::CheckLocation for 80209 --
+-- asking the buff itself where it belongs rather than hardcoding an area id, so
+-- it keeps matching whatever area group 2666 contains.
+DELETE FROM `spell_script_names` WHERE `spell_id`=80208 AND `ScriptName`='spell_quest_extincteur';
+INSERT INTO `spell_script_names` (`spell_id`,`ScriptName`) VALUES
+(80208,'spell_quest_extincteur');
+
+-- Needs a worldserver restart -- spell scripts are bound at startup and there is
+-- no `.reload spell_script_names`. The script change ships with it.
+--
+-- Undo is the DELETE above on its own, which returns to the 2026_08_22_17 state:
+-- correct credit, no buff recovery.

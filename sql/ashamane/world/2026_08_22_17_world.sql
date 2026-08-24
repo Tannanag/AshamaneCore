@@ -1,0 +1,46 @@
+-- Northshire Vineyards: stop "Extinguishing Hope" crediting two fires for one.
+--
+-- Reported symptom: putting out a single vineyard fire ticks the objective twice,
+-- so the quest completes after four fires instead of eight.
+--
+-- Quest 26391 wants 8 kill credits on 42940 Northshire Vineyards Fire Trigger,
+-- and one cast of 80208 "Spray Water" grants two, because two independent
+-- implementations of the same behaviour are both installed and neither knows
+-- about the other:
+--
+--   source                                    what it does on a Spray Water hit
+--   ----------------------------------------  -----------------------------------------
+--   spell_script_names -> spell_quest_extincteur   KilledMonsterCredit(42940), then
+--   (C++, bound to spell 80208)                    DespawnOrUnsummon() immediately
+--   smart_scripts on 42940, events 1/2/3           cast 80223 "Steam", then
+--   (SMART_EVENT_SPELLHIT 80208, two links)        SMART_ACTION_CALL_KILLEDMONSTER 42940,
+--                                                  then forced despawn after 1900 ms
+--
+-- Neither is broken on its own. Together they credit twice.
+--
+-- The SmartAI side is the one to keep, and not only because removing the other is
+-- a one-row DB change. It is the better of the two: it plays the Steam puff and
+-- then waits 1900 ms before despawning, so the effect is visible. The C++ script
+-- despawns the fire the instant the spell lands, which is very likely why the
+-- steam has never been seen -- the creature carrying it disappears in the same
+-- tick it is told to cast it. Dropping the C++ binding fixes the double credit
+-- and gets the visual back in the same change.
+--
+-- Nothing else is affected. spell_quest_extincteur is bound to this one spell and
+-- nothing else, and 42940 is the only creature in the database with a
+-- SMART_EVENT_SPELLHIT on 80208.
+DELETE FROM `spell_script_names` WHERE `spell_id`=80208 AND `ScriptName`='spell_quest_extincteur';
+
+-- The C++ class itself is left in the source. It is now bound to nothing and does
+-- nothing, and deleting it is a source change for no behavioural gain -- but it
+-- is worth knowing it is there if this quest is ever looked at again, because a
+-- future spell_script_names row would silently reintroduce this bug.
+--
+-- Also worth recording, since it looked like the obvious culprit and was not: the
+-- SmartAI spellhit event already carries event_flags 1
+-- (SMART_EVENT_FLAG_NOT_REPEATABLE), so a second Spray Water during the 1900 ms
+-- the fire stays alive does not re-credit. The 12 fire spawns are also all
+-- distinct, no two closer than 5 yd, so stacked triggers were not it either.
+--
+-- Spell scripts are bound at startup and there is no `.reload spell_script_names`,
+-- so this needs a worldserver restart rather than a reload.

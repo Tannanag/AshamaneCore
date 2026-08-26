@@ -73,6 +73,14 @@ DELETE FROM `creature` WHERE `guid` IN (
  169233,169240,169241,169253,169256,169257,169258,169261,169263,169294,
  169301,169309,169318,169324,169334,169337,169338,169339);
 
+-- Clear the new guid block before filling it. Every other file in this directory
+-- is UPDATE-only and so is re-runnable by accident; this one INSERTs fixed primary
+-- keys, and the worldserver's SQL updater will apply it again on the next start if
+-- its row in `updates` is ever missing -- after a hand-apply, a restored database,
+-- or a rehash. Without this DELETE that second run dies on
+-- "Duplicate entry '984600' for key 'creature.PRIMARY'" and the startup aborts.
+DELETE FROM `creature` WHERE `guid` BETWEEN 984600 AND 984641;
+
 INSERT INTO `creature` (`guid`,`id`,`map`,`zoneId`,`areaId`,`spawnDifficulties`,`phaseUseFlags`,`PhaseId`,`PhaseGroup`,`terrainSwapMap`,`modelid`,`equipment_id`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecs`,`wander_distance`,`currentwaypoint`,`curhealth`,`curmana`,`MovementType`,`npcflag`,`unit_flags`,`unit_flags2`,`unit_flags3`,`dynamicflags`,`ScriptName`,`VerifiedBuild`) VALUES
 (984600,46363,0,1,5495,'0',0,0,0,-1,35025,0,-5126.7986,768.8076,287.4157,3.6767,300,9.3,0,42,0,1,0,0,0,0,0,'',69465), -- 34 moves, 1 sniffed instance(s)
 (984601,46363,0,1,5495,'0',0,0,0,-1,35025,0,-5120.5747,755.1045,287.4513,3.4924,300,7.9,0,42,0,1,0,0,0,0,0,'',69465), -- 23 moves, 1 sniffed instance(s)

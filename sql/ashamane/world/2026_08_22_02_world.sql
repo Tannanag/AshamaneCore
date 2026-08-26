@@ -1,0 +1,67 @@
+-- Northshire Valley: put the woodcutting peasants back in peasant models and
+-- remove the three spare peasants standing next to them holding lumber.
+--
+-- Reported symptom: the peasants doing the tree-chopping animation are wearing
+-- default human models and should be wearing the peasant model, keeping the
+-- animation; and the peasants standing next to them holding wood should not be
+-- there at all.
+--
+-- All ten spawns are entry 11260 Northshire Peasant, and they split cleanly by
+-- their spawn-level model override:
+--
+--   guid     modelid  emote  what it is
+--   -------  -------  -----  ----------------------------------------
+--     5881     11035    234  chopping
+--     6028     11035    234  chopping
+--     6364     11035    234  chopping
+--     6366     11035    234  chopping
+--    10373     11035    234  chopping
+--    10954     11035    234  chopping
+--    43766     11035    234  chopping
+--   177908        89      -  standing, holding wood
+--   177909        89      -  standing, holding wood
+--   177910        89      -  standing, holding wood
+--
+-- emote 234 is EMOTE_STATE_WORK_CHOPWOOD, which is the animation to keep.
+--
+-- The model complaint is exact rather than approximate. Resolved through the
+-- client's own CreatureDisplayInfo.db2:
+--
+--   displayid  ModelID  how many displays share that ModelID
+--   ---------  -------  ------------------------------------
+--       11035       49  4242
+--       11354       74  27
+--          89       89  4
+--
+-- ModelID 49 with 4242 displays hanging off it is the generic human character
+-- model -- the one thousands of NPCs reskin with different equipment. That is
+-- literally the "default human model" in the report. ModelID 74 has 27 displays
+-- and every one of them belongs to a peasant (Eastvale, Hillsbrad, Marshtide,
+-- Tarren Mill, Lion's Landing, Violet Rise, and 11354 itself). ModelID 74 is
+-- the dedicated peasant model.
+--
+-- creature_template.modelid1 for entry 11260 is already 11354, the correct one.
+-- The seven choppers are only wrong because each spawn overrides it with 11035.
+-- Clearing the override is enough; nothing about the template needs changing,
+-- and the emote lives in creature_addon and is untouched.
+UPDATE `creature` SET `modelid`=0
+ WHERE `id`=11260 AND `guid` IN (5881,6028,6364,6366,10373,10954,43766);
+
+-- The three lumber-carriers. displayid 89 is the peasant-holding-firewood model
+-- (entry 6578 "Peasant (Wood)" is built on it), and each of the three stands a
+-- few yards from a chopper -- 177908 is 13 yd from 10373, 177910 is 3.6 yd from
+-- 6364 -- which is what makes them read as duplicates of the woodcutters rather
+-- than as their own bit of scenery. They are deleted, not hidden, along with
+-- any addon rows keyed to them.
+DELETE FROM `creature_addon` WHERE `guid` IN (177908,177909,177910);
+DELETE FROM `creature` WHERE `id`=11260 AND `guid` IN (177908,177909,177910);
+
+-- Scope: `id`=11260 is pinned on every statement and the guids are listed out.
+-- Northshire Peasant has exactly these ten spawns, but the modelid override and
+-- displayid 89 are both shared with peasants in other zones, so neither an
+-- entry-wide nor a model-wide UPDATE would have stayed inside Northshire.
+--
+-- Left alone on purpose: the seven choppers keep emote 234 and their
+-- orientations, and creature_template entry 11260 is not modified.
+--
+-- @touched: creature,creature_addon 5881,6028,6364,6366,10373,10954,43766,177908,177909,177910

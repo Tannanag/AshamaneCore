@@ -1,0 +1,71 @@
+-- Northshire Valley: put the seven woodcutters on Stormshield Peasant (59356),
+-- a peasant display on the character rig that plays the chopping animation.
+--
+-- 2026_08_22_02 cleared their spawn-level modelid override so they fell back to
+-- creature_template.modelid1 = 11354, the dedicated Northshire Peasant display.
+-- That answered the original report -- they had been on displayid 11035, which
+-- resolves to ModelID 49, the generic human character rig shared by 4242
+-- displays -- but on 11354 they stopped playing the chopping animation.
+--
+-- The emote is not the variable and never was. All seven carry emote 234
+-- EMOTE_STATE_WORK_CHOPWOOD in creature_addon, unchanged by that file and by
+-- this one. Only the display changed.
+--
+--   displayid  ModelID  chops?
+--   ---------  -------  --------------------------------------------------
+--       11035       49  yes -- what they had before 2026_08_22_02
+--       11354       74  not observed to
+--       59356       49  yes -- Stormshield Peasant, 6 spawns on emote 234
+--        5005       49  yes -- Stormwind Dock Worker, 15 spawns on emote 234
+--
+-- Stated honestly, because an earlier version of this file overstated it: it is
+-- NOT established that ModelID 74 cannot play emote 234. The in-game attempts
+-- that suggested so were invalid -- this core has no `.reload creature_addon`
+-- command, and Creature::LoadCreaturesAddon reads sObjectMgr's cache, which is
+-- filled only at startup, so emote changes tested without a worldserver restart
+-- never reached the game at all. A handful of other NPCs do pair emote 234 with
+-- ModelID 74 (Eastvale Peasant, Valgarde Laborer, Defias Miner), though each is
+-- a one or two spawn NPC where a missing animation would go unnoticed.
+--
+-- What is established is the other side, and it is enough to act on: ModelID 49
+-- does play this emote. These very spawns did it before the change, and
+-- Stormshield Peasant and Stormwind Dock Worker do it on 21 live spawns today.
+--
+-- The retail display could not be recovered from the sniff. DisplayID lives in
+-- the UpdateFields block and WowPacketParser has no layout for 12.1.0, so unlike
+-- the splines, auras, positions and facings taken from this dump elsewhere in
+-- the pass, there is nothing to validate a decode against. Byte-scanning the
+-- peasants' packets returned only coincidental matches, and the offset of the
+-- field relative to the object's guid is not constant between creatures, so it
+-- cannot be indexed. This is a choice made on the model's demonstrated ability
+-- to animate, not a match to retail.
+--
+-- 59356 keeps what the original report asked for. displayid 11035 carried
+-- ExtendedDisplayInfoID 7880 and read as an undressed villager, which is what
+-- "default human models" meant; 59356 carries 130664 and is dressed as a peasant,
+-- while sitting on the rig that chops.
+UPDATE `creature` SET `modelid`=59356
+ WHERE `id`=11260 AND `guid` IN (5881,6028,6364,6366,10373,10954,43766);
+
+-- Alternatives, all on ModelID 49 so all keep the animation, if Stormshield reads
+-- as too Warlords-era for Northshire:
+--
+--   displayid  used by
+--   ---------  ------------------------------------------
+--       59356  86087 Stormshield Peasant   <-- set here
+--       18889  133675 Peasant Worker
+--       24570  28557 Scarlet Peasant
+--       53841  85202 Lumberjack
+--        5005  29152 Stormwind Dock Worker
+--
+-- Scope: `id`=11260 is pinned and the seven guids are listed out.
+-- creature_template 11260 is not modified -- modelid1 stays 11354, so any
+-- Northshire Peasant spawned elsewhere is untouched. The three lumber-carrying
+-- spawns deleted in 2026_08_22_02 stay deleted.
+--
+-- No `-- @touched:` line: wpp_apply.py snapshots MovementType, wander_distance,
+-- path_id and orientation but not `modelid`, so its revert would not restore this
+-- column. Apply with mysql directly. The undo is:
+--
+--   UPDATE `creature` SET `modelid`=0
+--    WHERE `id`=11260 AND `guid` IN (5881,6028,6364,6366,10373,10954,43766);

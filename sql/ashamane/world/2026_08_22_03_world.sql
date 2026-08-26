@@ -1,0 +1,64 @@
+-- Northshire Valley: make the Goblin Assassins attackable, the same way the
+-- Coldridge Frostmane were fixed in 2026_08_20_00.
+--
+-- Reported symptom: the Goblin Assassins behave like the Frostmane Troll Whelps
+-- did -- they can be targeted and hit with an ability, but a right-click will
+-- not start a fight.
+--
+-- It is the same bug with the same shape. Every flag column is innocent:
+-- npcflag 2, unit_flags 0, unit_flags2 2048, unit_flags3 0, flags_extra 0. Only
+-- `faction` is wrong, and reading the client's FactionTemplate.db2 shows it
+-- reproducing the Frostmane table exactly:
+--
+--   tmpl  Faction  Flags   FactionGroup  0x400  used by                     right-click
+--   ----  -------  ------  ------------  -----  --------------------------  -----------
+--      7        7  0x0                0     no  50039 Goblin Assassin       no
+--     14       14  0x0                8     no  42937 Blackrock Invader     yes
+--    189        7  0x400              0    yes  708 Small Crag Boar         yes
+--
+-- FactionTemplateEntry::IsHostileTo (src/server/game/DataStores/DB2Structure.h:1079)
+-- ends in `(EnemyGroup & entry->FactionGroup) != 0` against the player's
+-- EnemyGroup of 12, so FactionGroup 0 reads non-hostile and the client withholds
+-- its right-click-attack default action -- while the server still lets a cast
+-- through, which is the split that was observed. Flags 0x400 is what restores
+-- the right-click on a non-hostile unit; it appears nowhere in the core (enum
+-- FactionTemplateFlags, src/server/game/DataStores/DBCEnums.h:673-678, knows
+-- only 0x800, 0x1000 and 0x2000), so it is read purely client-side.
+--
+-- Template 189 is the fix here for a better reason than it was in Coldridge:
+-- 189 points at Faction 7, which is the very same Faction the assassins are
+-- already on. Only the template changes, so nothing about their reputation or
+-- their relations with anything else moves -- this adds the 0x400 bit and
+-- nothing else.
+--
+-- Staying neutral rather than going hostile is deliberate. Template 14, the
+-- Blackrock Invader's, would have made them red and aggressive; the assassins
+-- are a kill objective for quest "They Sent Assassins" (28791-28797, 31144,
+-- 29081), which only needs them attackable, and the sniff shows them ignoring a
+-- player standing well inside aggro range.
+UPDATE `creature_template` SET `faction`=189 WHERE `entry`=50039;
+
+-- Scope: all 24 Goblin Assassin spawns are in zone 6170 on map 0, and the entry
+-- exists nowhere else in the world, so a template-level change cannot reach
+-- another zone.
+--
+-- Accepted with this, exactly as in Coldridge: 189 has an empty Friend[] and
+-- FriendGroup 0, so one assassin will not run to help another being attacked.
+--
+-- Not changed here, but worth knowing: Blackrock Spy (49874) and Blackrock Worg
+-- (49871) sit on the same broken template 7, and both are kill objectives too
+-- ("Lions for Lambs" and "Beating Them Back!"). They will have the same
+-- unresponsive right-click. They are left alone because the report named the
+-- assassins only, and because the spies are being changed in 2026_08_22_01 for
+-- an unrelated reason -- worth a look in game before deciding whether the same
+-- one-line change should follow for both.
+--
+-- No `-- @touched:` line here on purpose. wpp_apply.py reads that line to
+-- snapshot spawns, and it resolves the ids against `creature`; 50039 is a
+-- creature_template entry, not a spawn guid, so it would abort with
+-- "guids not in `creature`". This file changes exactly one column on one row
+-- and its undo is a single statement, kept here instead of in a revert file:
+--
+--   UPDATE `creature_template` SET `faction`=7 WHERE `entry`=50039;
+--
+-- Apply it with mysql directly rather than through wpp_apply.py.

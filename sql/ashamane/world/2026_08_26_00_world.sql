@@ -1,10 +1,7 @@
 -- New Tinkertown: rebuild the Crazed Leper Gnome (46363) spawns.
 --
--- Replaces 78 spawns with the 42 recovered from
--- dump_12.1.0.69465_2026-08-24_18-06-03-Tinkertown-part1.pkt. Position is each
--- spawn's median observed destination, wander_distance its 95th-percentile
--- displacement from that centre; five come out at 27-76 yd against a 9.3 yd
--- median and are most likely gnomes chased during the sniff.
+-- Replaces the 78 existing spawns with the 42 retail runs. Five wander_distance
+-- values are far above the 9.3 yd median and can be clamped if they roam too far.
 --
 -- Entries 46391 and 46012 are left alone. Needs a worldserver restart.
 DELETE FROM `creature_addon` WHERE `guid` IN (
@@ -21,7 +18,6 @@ DELETE FROM `creature` WHERE `guid` IN (
  169233,169240,169241,169253,169256,169257,169258,169261,169263,169294,
  169301,169309,169318,169324,169334,169337,169338,169339);
 
--- Clears its own guid block first so the SQL updater can re-run this file.
 DELETE FROM `creature` WHERE `guid` BETWEEN 984600 AND 984641;
 
 INSERT INTO `creature` (`guid`,`id`,`map`,`zoneId`,`areaId`,`spawnDifficulties`,`phaseUseFlags`,`PhaseId`,`PhaseGroup`,`terrainSwapMap`,`modelid`,`equipment_id`,`position_x`,`position_y`,`position_z`,`orientation`,`spawntimesecs`,`wander_distance`,`currentwaypoint`,`curhealth`,`curmana`,`MovementType`,`npcflag`,`unit_flags`,`unit_flags2`,`unit_flags3`,`dynamicflags`,`ScriptName`,`VerifiedBuild`) VALUES

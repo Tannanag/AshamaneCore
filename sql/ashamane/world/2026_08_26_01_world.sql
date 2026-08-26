@@ -1,45 +1,8 @@
--- New Tinkertown: give every Crazed Leper Gnome (46363) the retail animation auras.
+-- New Tinkertown: retail animation auras for the Crazed Leper Gnome (46363).
 --
--- The persistent hunched-over look the gnomes carry around New Tinkertown is not
--- an emote. Emotes.db2 has no fear and no sap entry at all -- the only stationary
--- pose in the whole store that comes close is EMOTE_STATE_COWER (431), and retail
--- never sends it to these gnomes. What retail does instead is hold three dummy
--- auras on them permanently:
---
---   95205  Irradiated (NPC)
---   86400  Leper Gnome Slime Drip
---   86414  Leper Gnome Zombie Anim
---
--- All three are Effect 6 APPLY_AURA with EffectAura 4 SPELL_AURA_DUMMY in
--- SpellEffect.db2 -- no server-side behaviour whatsoever. The animation is
--- entirely client-side, off the spell's own visual, which is exactly why it
--- survives movement: an emote state would be replaced by the walk animation the
--- moment the gnome took a step, and this is not.
---
--- 86414 is the one doing the work. Its name in Spell.db2 is literally
--- "Leper Gnome Zombie Anim".
---
--- This value is not a guess: it is what TrinityCore's own 4.3.4 sniff recorded for
--- this entry (sql/old/4.3.4/world/21_2017_09_17/2017_07_23_00_world.sql writes
--- `95205 86400 86414` to creature_template_addon for 46363, with bytes2=1 for the
--- sheath state). This server had drifted from that: creature_template_addon
--- carried only 95205, and the other two lived on creature_addon rows covering 16
--- of the 78 spawns. So most gnomes had no zombie animation and a minority did,
--- which is the likeliest reason the effect looked inconsistent in game.
---
--- Those 16 creature_addon rows are deleted in 2026_08_26_00_world.sql along with
--- the spawns they belonged to. Putting the auras on the template instead means
--- every gnome gets them and the 42 new spawns need no addon rows of their own.
---
--- SheathState 1 is SHEATH_STATE_MELEE, matching the sniff. It was 0 here.
---
--- Scope: entry 46363 only. Entry 46391, the aggressive gnomes at the old dormitory
--- and the loading room, keeps its own template addon untouched.
---
--- Reload with `.reload creature_template_addon`, then respawn a gnome -- addon
--- auras are applied when the creature is created.
+-- 95205 Irradiated (NPC), 86400 Leper Gnome Slime Drip, 86414 Leper Gnome Zombie
+-- Anim. All three are SPELL_AURA_DUMMY: the animation is client-side, which is why
+-- it survives movement where an emote state would not. Previously only 95205 was
+-- on the template, the other two on 16 of the 78 old creature_addon rows.
 UPDATE `creature_template_addon` SET `SheathState`=1, `auras`='95205 86400 86414' WHERE `entry`=46363;
 
--- No `-- @touched:` line: wpp_apply.py reads the numbers on it as creature guids
--- and 46363 is a template entry, so it would abort. See the revert file named in
--- 2026_08_26_00_world.sql.

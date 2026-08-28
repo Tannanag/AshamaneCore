@@ -4469,12 +4469,17 @@ void Spell::UpdateSpellCastDataAmmo(WorldPackets::Spells::SpellAmmo& ammo)
                                 break;
                             case ITEM_SUBCLASS_WEAPON_BOW:
                             case ITEM_SUBCLASS_WEAPON_CROSSBOW:
-                                ammoDisplayID = 5996;       // is this need fixing?
-                                ammoInventoryType = INVTYPE_AMMO;
-                                break;
                             case ITEM_SUBCLASS_WEAPON_GUN:
-                                ammoDisplayID = 5998;       // is this need fixing?
-                                ammoInventoryType = INVTYPE_AMMO;
+                                // No ammo display. This used to send ItemDisplayInfo
+                                // 5996 (arrow) and 5998 (bullet), but ammo was removed
+                                // in 6.0 and both rows are gone from the 7.3.5 client --
+                                // neighbouring ids 5994 and 5999 are still there, so it
+                                // is a deletion and not a gap. Sending a dangling
+                                // display id makes the client fall back to a default
+                                // model for the weapon it draws to fire with, and that
+                                // model then sticks until something else resets the
+                                // unit's display. The player branch above already sends
+                                // nothing for a bow or a gun.
                                 break;
                         }
 

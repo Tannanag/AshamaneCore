@@ -26,13 +26,25 @@ enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
 
-    // 85756, not the 6660 the Coldridge riflemen use. The difference is minimum
-    // range: 6660 is RangeIndex 54, 5 to 30 yards, and the leper gnomes walk in to
-    // 2.5-4.5 yards, so every cast came back refused as too close. 85756 is
-    // RangeIndex 5, 0 to 40 yards, which is what a scene fought at contact range
-    // needs. Joren can use 6660 because his invaders charge him from across the
-    // valley and he shoots them on the way in.
-    SPELL_SHOOT            = 85756
+    // Not 85756, which is what retail casts here, and not the 6660 the Coldridge
+    // riflemen use.
+    //
+    // 85756 draws the wrong weapon for the shot. That is the spell's own fault and
+    // not this zone's: casting 85756 at a Coldridge Defender -- a different model,
+    // different equipment, and an NPC that renders its rifle correctly with 6660 --
+    // breaks it there too. 85756 is the only spell in the client that uses
+    // SpellVisual 18304, so nothing else in the game exposes it, and the visual is
+    // resolved client-side, so no server change can reach it.
+    //
+    // 6660 is not the way out. It is RangeIndex 54, 5 to 30 yards, and the leper
+    // gnomes walk in to 2.5-4.5, so every cast comes back refused as too close.
+    //
+    // 208193 is RangeIndex 5, 0 to 40 yards, the same band as 85756; it carries
+    // SpellVisual 10208, the one 6660 uses and which renders correctly; it has no
+    // SPELL_ATTR0_REQ_AMMO; and its school damage is in the same range as 6660's.
+    // Of the twenty-four spells on visual 10208 only it and 233835 clear all four
+    // bars, and 233835 hits about twenty times harder.
+    SPELL_SHOOT            = 208193
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so

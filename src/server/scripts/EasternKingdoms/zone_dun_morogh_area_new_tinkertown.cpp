@@ -26,37 +26,19 @@ enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
 
-    // Not 85756, which is what retail gives this NPC (creature_template.spell2,
-    // VerifiedBuild 25549), because its visual will not leave the gun alone.
+    // Retail's own ranged attack for this NPC: creature_template.spell2 for 45847,
+    // sniffed at VerifiedBuild 25549. 6660, which the Coldridge riflemen use, is no
+    // good here -- RangeIndex 54, 5 to 30 yards, and the leper gnomes walk in to
+    // 2.5-4.5, so every cast comes back refused as too close. 85756 is RangeIndex 5,
+    // 0 to 40, and brings its own missile and sound.
     //
-    // 85756 is the only spell in the client using SpellVisual 18304, and 18304 is
-    // the only one of the candidates whose chain contains a
-    // SpellVisualKitModelAttach row: kit 17337 attaches SpellVisualEffectName 3113,
-    // model 165559, to the caster. No item in the game uses that model. Cast once it
-    // reads as the gun changing for the shot; cast every 2-3 seconds, as the sparring
-    // AI does, it replaces the equipped 52355 and is still there when the fight ends.
-    // An Operative that has never fought keeps 52355 correctly, which is what makes
-    // the scene ones look wrong by comparison. The visual is resolved client-side, so
-    // the spell is the only lever.
-    //
-    // 6660 is not the way out: RangeIndex 54, 5 to 30 yards, and the leper gnomes
-    // walk in to 2.5-4.5, so every cast comes back refused as too close.
-    //
-    // 208193 is RangeIndex 5, the same 0-40 band as 85756; it carries SpellVisual
-    // 10208, whose two kits hold no model attachments at all; it has no
-    // SPELL_ATTR0_REQ_AMMO; and its school damage is the same order as 6660's. Of the
-    // twenty-four spells on visual 10208 only it and 233835 clear all four bars, and
-    // 233835 hits about twenty times harder.
-    SPELL_SHOOT            = 208193,
-
-    // 85756's visual, 18304, is the look this scene wants, and the client will not
-    // give it whole: of its three kits only 17337 carries a
-    // SpellVisualKitModelAttach, and that is the one that puts a foreign gun on the
-    // caster. 17335 and 17336 are the other two, are used by no other visual in the
-    // client, and hold no attachment at all -- so they can be played straight onto
-    // the caster on top of 208193's cast. That gets 85756's shot without its gun.
-    SPELL_VISUAL_KIT_SHOT_START = 17335,
-    SPELL_VISUAL_KIT_SHOT_FIRE  = 17336
+    // Its SpellVisual 18304 used to leave a foreign gun on the caster: kit 17337
+    // attaches a model no item in the game uses, and at this firing rate that
+    // replaced the equipped 52355 and outlived the fight. The attachment is now
+    // blanked client-side by a hotfix override of the SpellVisualKitModelAttach row,
+    // in sql/ashamane/hotfixes/2026_08_28_00_hotfixes.sql. The row is overridden and
+    // not deleted -- deleting it crashes the client.
+    SPELL_SHOOT            = 85756
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so
@@ -142,14 +124,7 @@ private:
             // confusion that hid a minimum-range problem here for several passes.
             if (Creature* partner = me->FindNearestCreature(NPC_CRAZED_LEPER_GNOME, SPARRING_RANGE))
             {
-                if (me->CastSpell(partner, SPELL_SHOOT, false))
-                {
-                    // Only on a cast that actually went out, so the muzzle never
-                    // fires on a shot the client never saw.
-                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
-                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
-                }
-                else
+                if (!me->CastSpell(partner, SPELL_SHOOT, false))
                     TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s refused %u at %s, dist %.1f",
                         me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
                         partner->GetGUID().ToString().c_str(), me->GetExactDist(partner));

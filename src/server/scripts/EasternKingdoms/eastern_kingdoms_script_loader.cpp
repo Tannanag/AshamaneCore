@@ -232,6 +232,7 @@ void AddSC_burning_steppes();
 void AddSC_deadwind_pass();
 void AddSC_dun_morogh();
 void AddSC_dun_morogh_area_coldridge_valley();
+void AddSC_dun_morogh_area_new_tinkertown();
 void AddSC_duskwood();
 void AddSC_elwyn_forest();
 void AddSC_eversong_woods();
@@ -475,6 +476,7 @@ void AddEasternKingdomsScripts()
     AddSC_deadwind_pass();
     AddSC_dun_morogh();
     AddSC_dun_morogh_area_coldridge_valley();
+    AddSC_dun_morogh_area_new_tinkertown();
     AddSC_duskwood();
     AddSC_elwyn_forest();
     AddSC_eversong_woods();

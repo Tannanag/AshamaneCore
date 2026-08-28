@@ -4463,23 +4463,23 @@ void Spell::UpdateSpellCastDataAmmo(WorldPackets::Spells::SpellAmmo& ammo)
                     {
                         switch (itemEntry->SubclassID)
                         {
+                            // Every ranged weapon reports its own display, the way
+                            // thrown weapons always have. Ammo stopped existing in 6.0
+                            // and the client draws the weapon itself from this field
+                            // when CAST_FLAG_PROJECTILE is set, so a bow or a gun has
+                            // to answer it too. Sending anything else costs the caster
+                            // its weapon model for the shot: the ItemDisplayInfo 5996
+                            // and 5998 that used to go here are deleted from the 7.3.5
+                            // client -- neighbouring ids 5994 and 5999 still resolve,
+                            // so it is a deletion and not a gap -- and sending 0 is no
+                            // better, because the client then has nothing to draw and
+                            // falls back to a default model that sticks on the unit.
                             case ITEM_SUBCLASS_WEAPON_THROWN:
-                                ammoDisplayID = sDB2Manager.GetItemDisplayId(item_id, m_caster->GetVirtualItemAppearanceMod(i));
-                                ammoInventoryType = itemEntry->InventoryType;
-                                break;
                             case ITEM_SUBCLASS_WEAPON_BOW:
                             case ITEM_SUBCLASS_WEAPON_CROSSBOW:
                             case ITEM_SUBCLASS_WEAPON_GUN:
-                                // No ammo display. This used to send ItemDisplayInfo
-                                // 5996 (arrow) and 5998 (bullet), but ammo was removed
-                                // in 6.0 and both rows are gone from the 7.3.5 client --
-                                // neighbouring ids 5994 and 5999 are still there, so it
-                                // is a deletion and not a gap. Sending a dangling
-                                // display id makes the client fall back to a default
-                                // model for the weapon it draws to fire with, and that
-                                // model then sticks until something else resets the
-                                // unit's display. The player branch above already sends
-                                // nothing for a bow or a gun.
+                                ammoDisplayID = sDB2Manager.GetItemDisplayId(item_id, m_caster->GetVirtualItemAppearanceMod(i));
+                                ammoInventoryType = itemEntry->InventoryType;
                                 break;
                         }
 

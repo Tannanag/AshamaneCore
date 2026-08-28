@@ -76,6 +76,25 @@ struct npc_safe_operative_sparring : public ScriptedAI
         ScheduleShot();
     }
 
+    // ScriptedAI::AttackStart lands on AttackStartNoMove for a creature with combat
+    // movement off, and that calls me->Attack(who, true) -- meleeAttack true. That
+    // sets UNIT_STATE_MELEE_ATTACKING and sends SMSG_ATTACK_START to everyone in
+    // range, so the client puts the Operative into melee posture and draws hand
+    // slots 0 and 1, which are empty: no gun while the fight is on, and the shoot
+    // animation falls back to a default weapon. The gun reappears the moment the
+    // fight ends and SMSG_ATTACK_STOP restores the sheath state. Passing false
+    // keeps the target, the threat and the combat state and drops only the melee
+    // claim, which this AI never makes good on anyway -- it has no
+    // DoMeleeAttackIfReady.
+    void AttackStart(Unit* who) override
+    {
+        if (!who)
+            return;
+
+        if (me->Attack(who, false))
+            DoStartNoMovement(who);
+    }
+
     void UpdateAI(uint32 diff) override
     {
         // Runs in and out of combat, so the scene is already going before a player

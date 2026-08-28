@@ -47,7 +47,16 @@ enum SafeOperativeSparring
     // SPELL_ATTR0_REQ_AMMO; and its school damage is the same order as 6660's. Of the
     // twenty-four spells on visual 10208 only it and 233835 clear all four bars, and
     // 233835 hits about twenty times harder.
-    SPELL_SHOOT            = 208193
+    SPELL_SHOOT            = 208193,
+
+    // 85756's visual, 18304, is the look this scene wants, and the client will not
+    // give it whole: of its three kits only 17337 carries a
+    // SpellVisualKitModelAttach, and that is the one that puts a foreign gun on the
+    // caster. 17335 and 17336 are the other two, are used by no other visual in the
+    // client, and hold no attachment at all -- so they can be played straight onto
+    // the caster on top of 208193's cast. That gets 85756's shot without its gun.
+    SPELL_VISUAL_KIT_SHOT_START = 17335,
+    SPELL_VISUAL_KIT_SHOT_FIRE  = 17336
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so
@@ -132,10 +141,19 @@ private:
             // indistinguishable from an AI that is not running, which is exactly the
             // confusion that hid a minimum-range problem here for several passes.
             if (Creature* partner = me->FindNearestCreature(NPC_CRAZED_LEPER_GNOME, SPARRING_RANGE))
-                if (!me->CastSpell(partner, SPELL_SHOOT, false))
+            {
+                if (me->CastSpell(partner, SPELL_SHOOT, false))
+                {
+                    // Only on a cast that actually went out, so the muzzle never
+                    // fires on a shot the client never saw.
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                }
+                else
                     TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s refused %u at %s, dist %.1f",
                         me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
                         partner->GetGUID().ToString().c_str(), me->GetExactDist(partner));
+            }
 
             task.Repeat(Seconds(2), Seconds(3));
         });

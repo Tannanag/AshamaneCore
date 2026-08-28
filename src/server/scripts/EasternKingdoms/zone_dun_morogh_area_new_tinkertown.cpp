@@ -26,17 +26,28 @@ enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
 
-    // Retail's own ranged attack for this NPC: creature_template.spell2 for 45847,
-    // sniffed at build 25549. The Coldridge riflemen's 6660 is no use here -- it is
-    // RangeIndex 54, 5 to 30 yards, and the leper gnomes walk in to 2.5-4.5, so
-    // every cast comes back refused as too close. 85756 is RangeIndex 5, 0 to 40.
+    // Not 85756, which is what retail gives this NPC (creature_template.spell2,
+    // VerifiedBuild 25549), because its visual will not leave the gun alone.
     //
-    // It used to draw the wrong weapon for the shot, which is fixed in
-    // Spell::UpdateSpellCastDataAmmo rather than by casting something else: 85756
-    // carries SPELL_ATTR0_REQ_AMMO and 6660 does not, and that attribute is what
-    // sets CAST_FLAG_PROJECTILE and makes the client draw the weapon from the cast
-    // packet's ammo display.
-    SPELL_SHOOT            = 85756
+    // 85756 is the only spell in the client using SpellVisual 18304, and 18304 is
+    // the only one of the candidates whose chain contains a
+    // SpellVisualKitModelAttach row: kit 17337 attaches SpellVisualEffectName 3113,
+    // model 165559, to the caster. No item in the game uses that model. Cast once it
+    // reads as the gun changing for the shot; cast every 2-3 seconds, as the sparring
+    // AI does, it replaces the equipped 52355 and is still there when the fight ends.
+    // An Operative that has never fought keeps 52355 correctly, which is what makes
+    // the scene ones look wrong by comparison. The visual is resolved client-side, so
+    // the spell is the only lever.
+    //
+    // 6660 is not the way out: RangeIndex 54, 5 to 30 yards, and the leper gnomes
+    // walk in to 2.5-4.5, so every cast comes back refused as too close.
+    //
+    // 208193 is RangeIndex 5, the same 0-40 band as 85756; it carries SpellVisual
+    // 10208, whose two kits hold no model attachments at all; it has no
+    // SPELL_ATTR0_REQ_AMMO; and its school damage is the same order as 6660's. Of the
+    // twenty-four spells on visual 10208 only it and 233835 clear all four bars, and
+    // 233835 hits about twenty times harder.
+    SPELL_SHOOT            = 208193
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so

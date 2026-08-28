@@ -18,13 +18,20 @@
 #include "ScriptMgr.h"
 #include "Creature.h"
 #include "Duration.h"
+#include "Log.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 
 enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
-    SPELL_SHOOT            = 85756
+
+    // 6660 is the Shoot this core uses for its riflemen -- the Coldridge Defenders
+    // (37177) and Joren Ironstock both fire it. 85756 is the retail id for the same
+    // spell and its effects here look right (school damage plus weapon percent
+    // damage at 100%), but the Operatives were not visibly shooting with it, so this
+    // is the known-good one while we find out why.
+    SPELL_SHOOT            = 6660
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so
@@ -85,7 +92,14 @@ private:
         {
             // FindNearestCreature filters to living targets by default.
             if (Creature* partner = me->FindNearestCreature(NPC_CRAZED_LEPER_GNOME, SPARRING_RANGE))
-                DoCast(partner, SPELL_SHOOT);
+            {
+                // Checked rather than fired and forgotten. A cast that fails -- out of
+                // range, no usable weapon, wrong spell for this core -- is otherwise
+                // silent, and the scene just looks inert.
+                if (!me->CastSpell(partner, SPELL_SHOOT, false))
+                    TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s failed to cast %u at %s",
+                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT), partner->GetGUID().ToString().c_str());
+            }
 
             task.Repeat(Seconds(2), Seconds(3));
         });

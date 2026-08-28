@@ -26,12 +26,13 @@ enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
 
-    // 6660 is the Shoot this core uses for its riflemen -- the Coldridge Defenders
-    // (37177) and Joren Ironstock both fire it. 85756 is the retail id for the same
-    // spell and its effects here look right (school damage plus weapon percent
-    // damage at 100%), but the Operatives were not visibly shooting with it, so this
-    // is the known-good one while we find out why.
-    SPELL_SHOOT            = 6660
+    // 85756, not the 6660 the Coldridge riflemen use. The difference is minimum
+    // range: 6660 is RangeIndex 54, 5 to 30 yards, and the leper gnomes walk in to
+    // 2.5-4.5 yards, so every cast came back refused as too close. 85756 is
+    // RangeIndex 5, 0 to 40 yards, which is what a scene fought at contact range
+    // needs. Joren can use 6660 because his invaders charge him from across the
+    // valley and he shoots them on the way in.
+    SPELL_SHOOT            = 85756
 };
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so
@@ -61,16 +62,18 @@ struct npc_safe_operative_sparring : public ScriptedAI
         SetCombatMovement(false);
     }
 
+    // No SetSheath here. The sheath state belongs to creature_addon: the script
+    // cannot hold it, because HomeMovementGenerator::DoFinalize calls
+    // LoadCreaturesAddon() when the creature reaches its spawn point and that
+    // rewrites the sheath from the addon row -- after Reset() has already run, and
+    // before JustReachedHome(). An Operative set to RANGED here therefore drops
+    // back to the addon's value on every evade, so the seven of them end up in
+    // different sheath states at any given moment and the gun renders
+    // inconsistently across the camp.
     void Reset() override
     {
         _scheduler.CancelAll();
-        me->SetSheath(SHEATH_STATE_RANGED);
         ScheduleShot();
-    }
-
-    void EnterCombat(Unit* /*victim*/) override
-    {
-        me->SetSheath(SHEATH_STATE_RANGED);
     }
 
     void UpdateAI(uint32 diff) override
@@ -90,16 +93,15 @@ private:
     {
         _scheduler.Schedule(Seconds(2), Seconds(3), [this](TaskContext task)
         {
-            // FindNearestCreature filters to living targets by default.
+            // FindNearestCreature filters to living targets by default. The cast
+            // result is checked rather than discarded: a refused cast is otherwise
+            // indistinguishable from an AI that is not running, which is exactly the
+            // confusion that hid a minimum-range problem here for several passes.
             if (Creature* partner = me->FindNearestCreature(NPC_CRAZED_LEPER_GNOME, SPARRING_RANGE))
-            {
-                // Checked rather than fired and forgotten. A cast that fails -- out of
-                // range, no usable weapon, wrong spell for this core -- is otherwise
-                // silent, and the scene just looks inert.
                 if (!me->CastSpell(partner, SPELL_SHOOT, false))
-                    TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s failed to cast %u at %s",
-                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT), partner->GetGUID().ToString().c_str());
-            }
+                    TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s refused %u at %s, dist %.1f",
+                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
+                        partner->GetGUID().ToString().c_str(), me->GetExactDist(partner));
 
             task.Repeat(Seconds(2), Seconds(3));
         });

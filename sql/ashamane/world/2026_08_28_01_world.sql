@@ -1,0 +1,13 @@
+-- Bump the hotfix cache version so clients re-fetch hotfix data.
+--
+-- HotfixCacheVersion in worldserver.conf is 0, which means "use version.hotfix_cache_id",
+-- and that has always been 0. The client caches hotfix records locally and only discards
+-- that cache when this value changes, so a newly added hotfix_data row never reaches a
+-- client that has already cached the record -- SMSG_AVAILABLE_HOTFIXES is sent, but the
+-- client answers from its own cache instead of re-querying.
+--
+-- Any unused value works; it is a cache key, not a version number.
+--
+-- Needs a worldserver restart, and clients must be fully exited and relaunched -- the
+-- cache lives in the client's own Cache directory, so a relog is not enough.
+UPDATE `version` SET `hotfix_cache_id`=1;

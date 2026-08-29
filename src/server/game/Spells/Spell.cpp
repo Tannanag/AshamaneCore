@@ -4192,7 +4192,12 @@ void Spell::SendSpellStart()
     if (((IsTriggered() && !m_spellInfo->IsAutoRepeatRangedSpell()) || m_triggeredByAuraSpell) && !m_fromClient)
         castFlags |= CAST_FLAG_PENDING;
 
-    if (m_spellInfo->HasAttribute(SPELL_ATTR0_REQ_AMMO) || m_spellInfo->HasAttribute(SPELL_ATTR0_CU_NEEDS_AMMO_DATA))
+    // PROBE (temporary, uncommitted): drop the raw SPELL_ATTR0_REQ_AMMO term.
+    // SPELL_ATTR0_CU_NEEDS_AMMO_DATA is declared but never set anywhere in this core,
+    // so this disables CAST_FLAG_PROJECTILE entirely. If the ranged weapon then
+    // renders correctly, the flag itself is what breaks the 7.3.5 client and the
+    // ce794f3978 backport is the principled version of this.
+    if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_NEEDS_AMMO_DATA))
         castFlags |= CAST_FLAG_PROJECTILE;
 
     if ((m_caster->GetTypeId() == TYPEID_PLAYER ||
@@ -4293,7 +4298,12 @@ void Spell::SendSpellGo()
     if (((IsTriggered() && !m_spellInfo->IsAutoRepeatRangedSpell()) || m_triggeredByAuraSpell) && !m_fromClient)
         castFlags |= CAST_FLAG_PENDING;
 
-    if (m_spellInfo->HasAttribute(SPELL_ATTR0_REQ_AMMO) || m_spellInfo->HasAttribute(SPELL_ATTR0_CU_NEEDS_AMMO_DATA))
+    // PROBE (temporary, uncommitted): drop the raw SPELL_ATTR0_REQ_AMMO term.
+    // SPELL_ATTR0_CU_NEEDS_AMMO_DATA is declared but never set anywhere in this core,
+    // so this disables CAST_FLAG_PROJECTILE entirely. If the ranged weapon then
+    // renders correctly, the flag itself is what breaks the 7.3.5 client and the
+    // ce794f3978 backport is the principled version of this.
+    if (m_spellInfo->HasAttribute(SPELL_ATTR0_CU_NEEDS_AMMO_DATA))
         castFlags |= CAST_FLAG_PROJECTILE;                        // arrows/bullets visual
 
     if ((m_caster->GetTypeId() == TYPEID_PLAYER ||

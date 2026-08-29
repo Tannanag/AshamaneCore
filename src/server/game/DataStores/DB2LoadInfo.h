@@ -5313,44 +5313,6 @@ struct SpellVisualKitLoadInfo
     }
 };
 
-struct SpellVisualKitModelAttachLoadInfo
-{
-    static DB2LoadInfo const* Instance()
-    {
-        static DB2FieldMeta const fields[] =
-        {
-            { false, FT_FLOAT, "Offset1" },
-            { false, FT_FLOAT, "Offset2" },
-            { false, FT_FLOAT, "Offset3" },
-            { false, FT_FLOAT, "OffsetVariation1" },
-            { false, FT_FLOAT, "OffsetVariation2" },
-            { false, FT_FLOAT, "OffsetVariation3" },
-            { false, FT_INT, "ID" },
-            { false, FT_SHORT, "SpellVisualEffectNameID" },
-            { true, FT_BYTE, "AttachmentID" },
-            { false, FT_BYTE, "Flags" },
-            { false, FT_SHORT, "PositionerID" },
-            { false, FT_FLOAT, "Yaw" },
-            { false, FT_FLOAT, "Pitch" },
-            { false, FT_FLOAT, "Roll" },
-            { false, FT_FLOAT, "YawVariation" },
-            { false, FT_FLOAT, "PitchVariation" },
-            { false, FT_FLOAT, "RollVariation" },
-            { false, FT_FLOAT, "Scale" },
-            { false, FT_FLOAT, "ScaleVariation" },
-            { true, FT_SHORT, "StartAnimID" },
-            { true, FT_SHORT, "AnimID" },
-            { true, FT_SHORT, "EndAnimID" },
-            { false, FT_SHORT, "AnimKitID" },
-            { false, FT_INT, "LowDefModelAttachID" },
-            { false, FT_FLOAT, "StartDelay" },
-            { true, FT_INT, "ParentSpellVisualKitID" },
-        };
-        static DB2LoadInfo const loadInfo(&fields[0], std::extent<decltype(fields)>::value, SpellVisualKitModelAttachMeta::Instance(), HOTFIX_SEL_SPELL_VISUAL_KIT_MODEL_ATTACH);
-        return &loadInfo;
-    }
-};
-
 struct SpellXSpellVisualLoadInfo
 {
     static DB2LoadInfo const* Instance()

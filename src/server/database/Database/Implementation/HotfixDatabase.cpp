@@ -1260,11 +1260,6 @@ void HotfixDatabaseConnection::DoPrepareStatements()
         " FROM spell_visual_kit", CONNECTION_SYNCH);
     PREPARE_MAX_ID_STMT(HOTFIX_SEL_SPELL_VISUAL_KIT, "SELECT MAX(ID) + 1 FROM spell_visual_kit", CONNECTION_SYNCH);
 
-    // SpellVisualKitModelAttach.db2
-    PrepareStatement(HOTFIX_SEL_SPELL_VISUAL_KIT_MODEL_ATTACH, "SELECT Offset1, Offset2, Offset3, OffsetVariation1, OffsetVariation2, OffsetVariation3, ID, SpellVisualEffectNameID, AttachmentID, Flags, PositionerID, Yaw, Pitch, Roll, YawVariation, PitchVariation, RollVariation, Scale, ScaleVariation, StartAnimID, AnimID, EndAnimID, AnimKitID, LowDefModelAttachID, StartDelay, ParentSpellVisualKitID"
-        " FROM spell_visual_kit_model_attach", CONNECTION_SYNCH);
-    PREPARE_MAX_ID_STMT(HOTFIX_SEL_SPELL_VISUAL_KIT_MODEL_ATTACH, "SELECT MAX(ID) + 1 FROM spell_visual_kit_model_attach", CONNECTION_SYNCH);
-
     // SpellXSpellVisual.db2
     PrepareStatement(HOTFIX_SEL_SPELL_X_SPELL_VISUAL, "SELECT SpellVisualID, ID, Probability, CasterPlayerConditionID, CasterUnitConditionID, "
         "ViewerPlayerConditionID, ViewerUnitConditionID, SpellIconFileID, ActiveIconFileID, Flags, DifficultyID, Priority, SpellID"

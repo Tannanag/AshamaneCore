@@ -3114,32 +3114,6 @@ struct SpellVisualKitEntry
     uint16 DelayMax;
 };
 
-struct SpellVisualKitModelAttachEntry
-{
-    float Offset[3];
-    float OffsetVariation[3];
-    uint32 ID;
-    uint16 SpellVisualEffectNameID;
-    int8 AttachmentID;
-    uint8 Flags;
-    uint16 PositionerID;
-    float Yaw;
-    float Pitch;
-    float Roll;
-    float YawVariation;
-    float PitchVariation;
-    float RollVariation;
-    float Scale;
-    float ScaleVariation;
-    int16 StartAnimID;
-    int16 AnimID;
-    int16 EndAnimID;
-    uint16 AnimKitID;
-    uint32 LowDefModelAttachID;
-    float StartDelay;
-    int32 ParentSpellVisualKitID;
-};
-
 struct SpellXSpellVisualEntry
 {
     uint32 SpellVisualID;

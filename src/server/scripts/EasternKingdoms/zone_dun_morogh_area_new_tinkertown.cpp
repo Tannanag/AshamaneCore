@@ -26,31 +26,38 @@ enum SafeOperativeSparring
 {
     NPC_CRAZED_LEPER_GNOME = 46391,
 
-    // Retail's own ranged attack for this NPC: creature_template.spell2 for 45847,
-    // sniffed at VerifiedBuild 25549. It brings its own missile, its own three
-    // SoundKits and its own animations, which is why nothing else was accurate
-    // enough. 6660 is no substitute -- RangeIndex 54, 5 to 30 yards, and the leper
-    // gnomes walk in to 2.5-4.5, so every cast comes back refused as too close.
-    SPELL_SHOOT            = 85756,
-
-    // The one part of 85756 that has to go. SpellVisual 18304 fires three kits;
-    // 17335 and 17336 are the shot -- animations and SoundKits 20688 and 20685 --
-    // and 17337 is SoundKit 20686 plus the single SpellVisualKitModelAttach row in
-    // the whole chain, 288183, which hangs SpellVisualEffectName 3113 (a model no
-    // item in the game uses) off the caster. That attachment never clears by itself,
-    // so at this firing rate it replaced the equipped 52355 and outlived the fight.
+    // Not 85756, which is what retail gives this NPC (creature_template.spell2,
+    // VerifiedBuild 25549), because its visual will not leave the gun alone.
     //
-    // SMSG_CANCEL_SPELL_VISUAL_KIT takes a single kit id, so the kit is cancelled
-    // per shot and everything else about the spell is left alone. Correcting the
-    // client data instead was tried twice and abandoned: deleting the kit crashes
-    // the client, and overriding the attach row through hotfix_data is ignored by it.
-    SPELL_VISUAL_KIT_GUN_ATTACH = 17337
-};
+    // 85756 is the only spell in the client using SpellVisual 18304, and 18304 is
+    // the only one of the candidates whose chain contains a
+    // SpellVisualKitModelAttach row: kit 17337 attaches SpellVisualEffectName 3113,
+    // model 165559, to the caster. No item in the game uses that model. Cast once it
+    // reads as the gun changing for the shot; cast every 2-3 seconds, as the sparring
+    // AI does, it replaces the equipped 52355 and is still there when the fight ends.
+    // An Operative that has never fought keeps 52355 correctly, which is what makes
+    // the scene ones look wrong by comparison. The visual is resolved client-side, so
+    // the spell is the only lever.
+    //
+    // 6660 is not the way out: RangeIndex 54, 5 to 30 yards, and the leper gnomes
+    // walk in to 2.5-4.5, so every cast comes back refused as too close.
+    //
+    // 208193 is RangeIndex 5, the same 0-40 band as 85756; it carries SpellVisual
+    // 10208, whose two kits hold no model attachments at all; it has no
+    // SPELL_ATTR0_REQ_AMMO; and its school damage is the same order as 6660's. Of the
+    // twenty-four spells on visual 10208 only it and 233835 clear all four bars, and
+    // 233835 hits about twenty times harder.
+    SPELL_SHOOT            = 208193,
 
-// Long enough that the attachment has been applied and the shot reads as a shot --
-// the missile covers the 3-4 yards these pairs stand apart in about a tenth of a
-// second -- and short enough that the wrong gun is never left parked in their hands.
-static constexpr Milliseconds GUN_ATTACH_CANCEL_DELAY = Milliseconds(700);
+    // 85756's visual, 18304, is the look this scene wants, and the client will not
+    // give it whole: of its three kits only 17337 carries a
+    // SpellVisualKitModelAttach, and that is the one that puts a foreign gun on the
+    // caster. 17335 and 17336 are the other two, are used by no other visual in the
+    // client, and hold no attachment at all -- so they can be played straight onto
+    // the caster on top of 208193's cast. That gets 85756's shot without its gun.
+    SPELL_VISUAL_KIT_SHOT_START = 17335,
+    SPELL_VISUAL_KIT_SHOT_FIRE  = 17336
+};
 
 // The spell reaches 40 yards. The sparring pairs stand between 3 and 25 apart, so
 // 30 covers the scene without an Operative picking a fight across the camp.
@@ -90,10 +97,6 @@ struct npc_safe_operative_sparring : public ScriptedAI
     void Reset() override
     {
         _scheduler.CancelAll();
-
-        // An Operative whose partner died mid-visual keeps the attachment, and its
-        // scheduled cancel died with CancelAll. Clear it on the way back to idle.
-        me->SendCancelSpellVisualKit(SPELL_VISUAL_KIT_GUN_ATTACH);
         ScheduleShot();
     }
 
@@ -140,12 +143,12 @@ private:
             if (Creature* partner = me->FindNearestCreature(NPC_CRAZED_LEPER_GNOME, SPARRING_RANGE))
             {
                 if (me->CastSpell(partner, SPELL_SHOOT, false))
-                    // Only on a cast that went out, so a shot the client never saw
-                    // cannot cancel a kit belonging to the previous one.
-                    task.Schedule(GUN_ATTACH_CANCEL_DELAY, [this](TaskContext /*cancel*/)
-                    {
-                        me->SendCancelSpellVisualKit(SPELL_VISUAL_KIT_GUN_ATTACH);
-                    });
+                {
+                    // Only on a cast that actually went out, so the muzzle never
+                    // fires on a shot the client never saw.
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                }
                 else
                     TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_sparring: %s refused %u at %s, dist %.1f",
                         me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),

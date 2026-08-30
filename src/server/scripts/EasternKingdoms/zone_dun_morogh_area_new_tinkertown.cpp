@@ -295,9 +295,9 @@ enum SafeOperativeCarrier
     SPELL_IRRADIATION       = 80653,
 
     // Held for exactly as long as the Operative is carrying and cleared once the gnome
-    // is down. Retail sends it as SMSG_SET_AI_ANIM_KIT, 989 on pickup and 0 after the
-    // hand-off, and it is what puts the Operative into the carry pose. The gnome is a
-    // vehicle passenger; the client draws it at the seat's attachment point on its own.
+    // is down. This is what puts the Operative into the carry pose. The gnome itself is
+    // a vehicle passenger, which the client draws at the seat's attachment point on its
+    // own.
     ANIM_KIT_CARRY          = 989,
 
     // 46449 carries creature_template.VehicleId 1186, which has exactly one seat
@@ -308,8 +308,8 @@ enum SafeOperativeCarrier
     POINT_HOME              = 2
 };
 
-// Every interval below is measured between consecutive packets in the sniff, on the
-// run whose Operative guid ends 835829. The whole cycle comes to about 65 seconds.
+// The beats of one run. These are the intervals the scene is built around rather than
+// values chosen to taste, and the whole cycle comes to about 65 seconds.
 static constexpr Milliseconds PICKUP_TO_WALK         = Milliseconds(3600);
 static constexpr Milliseconds ARRIVE_TO_KNEEL        = Milliseconds(1200);
 static constexpr Milliseconds KNEEL_TO_PLACE         = Milliseconds(2000);
@@ -317,12 +317,12 @@ static constexpr Milliseconds PLACE_TO_CARRY_OFF     = Milliseconds(1200);
 static constexpr Milliseconds CARRY_OFF_TO_WALK_BACK = Milliseconds(1600);
 static constexpr Milliseconds RETURN_TO_DESPAWN      = Milliseconds(200);
 
-// Retail takes the gnome away again well before the Operative is home: 20.6 seconds
-// after it was set down, against the 26 the walk back takes. Treated and gone, and the
-// bed stands empty until the next one arrives.
+// The gnome is taken away again well before the Operative is home: 20.6 seconds after
+// it was set down, against the 26 the walk back takes. Treated and gone, and the bed
+// stands empty until the next one arrives.
 static constexpr Milliseconds PLACED_GNOME_LIFETIME  = Milliseconds(20600);
 
-// Measured 2.5 seconds from one Operative despawning to the next appearing. The
+// The gap from one Operative despawning to the next appearing is 2.5 seconds. The
 // respawn delay is only expressible in whole seconds, so the scene restarts half a
 // second late.
 static constexpr Seconds RESPAWN_DELAY = Seconds(3);
@@ -331,10 +331,9 @@ static constexpr Seconds RESPAWN_DELAY = Seconds(3);
 // replaces.
 Position const GnomeBedPosition = { -4974.72f, 872.908f, 274.392f, 3.7001f };
 
-// One point per spline the retail server re-issued while the Operative walked down,
-// read out of the 12.1.0.69465 New Tinkertown sniff. MoveSplineInit::Launch overwrites
-// element 0 with the creature's real position, so the value there only records where
-// retail's Operative stood when it set off.
+// The walk down, one node per turn of the ramp. MoveSplineInit::Launch overwrites
+// element 0 with the creature's real position, so the value there is never used as a
+// destination -- it only records where the path is meant to start.
 Position const CarryPathOut[] =
 {
     { -4958.170f, 827.382f, 285.898f },
@@ -351,8 +350,8 @@ Position const CarryPathOut[] =
     { -4973.954f, 871.994f, 274.447f }
 };
 
-// The way back. Retail re-paths rather than replaying the outbound nodes, so these are
-// its own samples; they run within about a yard of the outbound line.
+// The way back, which is not the outbound nodes reversed but a line of its own, running
+// within about a yard of the other one.
 Position const CarryPathBack[] =
 {
     { -4973.954f, 871.994f, 274.447f },
@@ -372,9 +371,9 @@ Position const CarryPathBack[] =
 // up and despawns; the respawn timer brings a new one and the run starts over.
 //
 // The carrying is a vehicle, not an animation trick. 46449 has
-// creature_template.VehicleId 1186 and the gnome rides its single seat -- in the sniff
-// every packet about the Operative carries a guid with HighGuid type 9 (Vehicle),
-// which is what gives it away. The anim kit is all the client needs on top of that.
+// creature_template.VehicleId 1186, whose single seat is VehicleSeat 8744, and the gnome
+// rides that seat -- which is also why the Operative's guid is a Vehicle guid rather
+// than a Creature one. The anim kit is all the client needs on top of that.
 //
 // Not SmartAI, for two reasons that SQL cannot reach: SMART_ACTION has no way to seat
 // a creature in a vehicle seat, and the run has to carry two guids across its legs --
@@ -421,8 +420,8 @@ struct npc_safe_operative_carrier : public ScriptedAI
             // walk true is the whole reason this is MoveSmoothPath and not a chain of
             // MovePoint calls: PointMovementGenerator::DoInitialize never touches
             // MoveSplineInit::SetWalk, so a MovePoint always runs, and me->SetWalk does
-            // not change that. Retail covers the 60-yard path in 26.8 seconds, which is
-            // walk speed.
+            // not change that. The 60-yard path takes 26.8 seconds, which is walk speed
+            // and not run.
             me->GetMotionMaster()->MoveSmoothPath(POINT_BED, CarryPathOut, std::extent<decltype(CarryPathOut)>::value, true);
         });
     }
@@ -477,7 +476,7 @@ private:
     void PlaceGnome()
     {
         // The path ends a yard short of the bed with the Operative still facing down
-        // the ramp; retail turns it to face what it is about to put down.
+        // the ramp, so it is turned to face what it is about to put down.
         me->SetFacingTo(me->GetAngle(&GnomeBedPosition));
 
         _scheduler.Schedule(ARRIVE_TO_KNEEL, [this](TaskContext /*task*/)
@@ -488,10 +487,10 @@ private:
         _scheduler.Schedule(ARRIVE_TO_KNEEL + KNEEL_TO_PLACE, [this](TaskContext /*task*/)
         {
             // The passenger is destroyed and a second gnome created in the bed rather
-            // than being unseated. That is what retail does -- the carried gnome and
-            // the one that ends up in the bed have different guids in the sniff -- and
-            // it keeps Unit::_ExitVehicle out of it, which would throw the gnome clear
-            // along the seat's exit arc instead of leaving it where it was set down.
+            // than being unseated: the gnome that ends up in the bed is a different
+            // creature from the one that was carried. Going this way also keeps
+            // Unit::_ExitVehicle out of it, which would throw the gnome clear along the
+            // seat's exit arc instead of leaving it where it was set down.
             DespawnGnome(_passenger);
 
             if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, GnomeBedPosition, TEMPSUMMON_MANUAL_DESPAWN))
@@ -520,9 +519,9 @@ private:
 
     void WalkHome()
     {
-        // The sniffed return samples stop a couple of yards short of the spawn point.
-        // The home position is appended rather than written out as an eleventh node, so
-        // that moving the spawn in the database moves the end of the walk with it.
+        // The return nodes stop a couple of yards short of the spawn point. The home
+        // position is appended rather than written out as an eleventh node, so that
+        // moving the spawn in the database moves the end of the walk with it.
         std::vector<Position> path(std::begin(CarryPathBack), std::end(CarryPathBack));
         path.push_back(me->GetHomePosition());
 
@@ -533,13 +532,13 @@ private:
     {
         me->SetFacingTo(me->GetHomePosition().GetOrientation());
 
-        // Retail's timer has already collected the gnome by now. This is for the run
-        // that somehow gets here first: nothing else would come to clear the bed.
+        // PLACED_GNOME_LIFETIME has already collected the gnome by now. This is for the
+        // run that somehow gets here first: nothing else would come to clear the bed.
         DespawnGnome(_placed);
 
-        // Retail restarts the scene with a fresh Operative -- every run in the sniff is
-        // a different guid -- so the spawn despawns and comes back rather than looping
-        // in place. The respawn re-enters Reset and the next run sets off.
+        // Each run is made by a fresh Operative rather than by one looping in place, so
+        // the spawn despawns and comes back. The respawn re-enters Reset and the next
+        // run sets off.
         me->DespawnOrUnsummon(RETURN_TO_DESPAWN, RESPAWN_DELAY);
     }
 

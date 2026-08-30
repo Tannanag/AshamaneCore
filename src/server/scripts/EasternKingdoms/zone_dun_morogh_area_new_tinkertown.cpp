@@ -408,7 +408,14 @@ struct npc_safe_operative_carrier : public ScriptedAI
 
         me->SetAIAnimKitId(ANIM_KIT_CARRY);
 
-        if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
+        // Summoned hidden. Boarding is not instant -- the seat is filled by a
+        // VehicleJoinEvent a tick later, and the client plays the seat's enter
+        // animation over the top of it -- so a gnome that were visible from the start
+        // would be seen lying on the ground and climbing aboard. Hidden, the first
+        // thing any client is told about it is the create block sent from
+        // PassengerBoarded, by which point it is already in the Operative's arms and
+        // turned the right way.
+        if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN, 0, 0, true))
         {
             _passenger = gnome->GetGUID();
             BoardGnome(gnome);
@@ -517,9 +524,30 @@ struct npc_safe_operative_carrier : public ScriptedAI
         // So that a client which streams the gnome in later, rather than watching it
         // board, is told the same angle.
         passenger->m_movementInfo.transport.pos.SetOrientation(CARRY_YAW);
+
+        // Everything about the gnome is now settled, so let the clients have it.
+        if (Creature* gnome = passenger->ToCreature())
+            Reveal(gnome);
     }
 
 private:
+    // Map::SummonCreature applies visibleBySummonerOnly before AddToMap, so a summon
+    // flagged that way never has a create block built for it at all; and because
+    // WorldObject::CanSeeOrDetect only exempts the summoner, a creature summoner means
+    // no player sees it. That is what lets every gnome in this scene be assembled
+    // off-screen and handed over finished. These two are the on and off.
+    static void Reveal(Creature* gnome)
+    {
+        gnome->SetVisibleBySummonerOnly(false);
+        gnome->UpdateObjectVisibility();
+    }
+
+    static void Conceal(Creature* gnome)
+    {
+        gnome->SetVisibleBySummonerOnly(true);
+        gnome->UpdateObjectVisibility();
+    }
+
     // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
     // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
     // Spell::CheckCast in the way of a cast that has no business failing -- and when it
@@ -552,10 +580,21 @@ private:
             // seat's exit arc instead of leaving it where it was set down.
             DespawnGnome(_passenger);
 
-            if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, GnomeBedPosition, TEMPSUMMON_MANUAL_DESPAWN))
+            // Hidden again, for a different reason: Creature::UpdateEntry runs
+            // LoadCreaturesAddon before AddToMap, and creature_template_addon has 46447
+            // standing, so a visible summon is created on its feet and only lies down
+            // when the stand state that follows reaches the client -- with the whole
+            // transition animation played out in the bed. Setting it before the reveal
+            // puts UNIT_STAND_STATE_SLEEP in the create block instead, so the gnome has
+            // never been anything but lying there.
+            if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, GnomeBedPosition, TEMPSUMMON_MANUAL_DESPAWN, 0, 0, true))
             {
                 _placed = gnome->GetGUID();
                 gnome->SetStandState(UNIT_STAND_STATE_SLEEP);
+                Reveal(gnome);
+
+                // After the reveal, so the cast itself is something the clients see
+                // rather than an aura that was always there.
                 gnome->CastSpell(gnome, SPELL_IRRADIATION, true);
             }
         });
@@ -604,7 +643,15 @@ private:
     void DespawnGnome(ObjectGuid& guid)
     {
         if (Creature* gnome = ObjectAccessor::GetCreature(*me, guid))
+        {
+            // Unsummoning a seated passenger goes through Unit::_ExitVehicle, which
+            // unroots it and launches a spline that falls and lands beside the vehicle:
+            // the gnome visibly hops out of the Operative's arms and only then vanishes.
+            // Hiding it first means that spline is launched for something no client is
+            // drawing any more, so what is seen is the gnome going out while still held.
+            Conceal(gnome);
             gnome->DespawnOrUnsummon();
+        }
 
         guid.Clear();
     }

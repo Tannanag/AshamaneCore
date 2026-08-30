@@ -19,6 +19,7 @@
 #include "Creature.h"
 #include "Duration.h"
 #include "Log.h"
+#include "Map.h"
 #include "MotionMaster.h"
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
@@ -389,9 +390,132 @@ Position const CarryPathBack[] =
 // a creature in a vehicle seat, and the run has to carry two guids across its legs --
 // the passenger, which has to be found again at the bed, and the gnome left in the
 // bed, which has to be found again when its time is up.
-struct npc_safe_operative_carrier : public ScriptedAI
+// Shared by every S.A.F.E. Operative that holds an Injured Gnome -- the one that
+// carries a casualty down to the bed, and the two that kneel over one. They all seat
+// the gnome in the same vehicle seat, they all have to put its facing back afterwards,
+// they all have to stop the vehicle code advertising a click, and none of them fight.
+struct npc_safe_operative_bearer : public ScriptedAI
 {
-    npc_safe_operative_carrier(Creature* creature) : ScriptedAI(creature) { }
+    npc_safe_operative_bearer(Creature* creature) : ScriptedAI(creature) { }
+
+    // This Operative never fights, and the run breaks if it tries. A victim means
+    // ChaseMovementGenerator, which takes MOTION_SLOT_ACTIVE off the carry spline and
+    // walks the Operative off the ramp with the gnome still on its back; the end of
+    // the fight then leaves it standing wherever it stopped, because the arrival that
+    // would have driven the rest of the scene never comes. The evade after it is
+    // worse: MoveTargetedHome ends in LoadCreaturesAddon, which clears the anim kit,
+    // so it walks home in the carry pose and loses it on arrival.
+    //
+    // REACT_PASSIVE alone does not cover this. It stops the Operative choosing a
+    // target of its own, but AttackStart is reachable without it -- another creature's
+    // AI calling it directly, an assist, a spell that forces a target. The two
+    // overrides make the AI structurally incapable of taking a victim rather than
+    // merely disinclined to look for one.
+    //
+    // creature_template.unit_flags 768 is IMMUNE_TO_PC | IMMUNE_TO_NPC, so nothing can
+    // attack the Operative either. That flag stays in the database rather than being
+    // re-asserted here, the same way the sparring Operatives leave their sheath state
+    // to creature_addon.
+    void AttackStart(Unit* /*who*/) override { }
+
+    // Cuts the out-of-combat LOS scan entirely. REACT_PASSIVE already makes
+    // CreatureAI::MoveInLineOfSight return without aggroing, so this changes no
+    // behaviour -- it only stops the Operative running that check against every unit
+    // it passes on a walk that crosses the length of the camp twice a minute.
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    // VehicleJoinEvent::Execute finishes the boarding with init.SetFacing(0.0f), and
+    // nothing in this core ever reads VehicleSeatEntry::PassengerYaw, so every passenger
+    // ends up facing straight along the vehicle's local X axis whatever the seat asked
+    // for. On this seat that leaves the gnome lying at the wrong angle across the
+    // Operative, so the transport-enter spline is re-issued with the facing the carry
+    // wants. The offset is read back from what the join event just wrote, which keeps
+    // the seat's own attachment point rather than hard-coding it here.
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (!passenger)
+            return;
+
+        if (!apply)
+        {
+            // Vehicle::RemovePassenger puts UNIT_NPC_FLAG_SPELLCLICK back on as its very
+            // first act, and this hook is its last, so here is where it comes off again.
+            // Without this the cog sits on the Operative for the whole walk home.
+            ClearSpellClick();
+            return;
+        }
+
+        // By value, not by reference: the orientation is written back to this same
+        // member a few lines down.
+        Position const seat = passenger->m_movementInfo.transport.pos;
+
+        Movement::MoveSplineInit init(passenger);
+        init.DisableTransportPathTransformations();
+        init.MoveTo(seat.GetPositionX(), seat.GetPositionY(), seat.GetPositionZ(), false, true);
+        init.SetFacing(CARRY_YAW);
+        init.SetTransportEnter();
+        init.Launch();
+
+        // So that a client which streams the gnome in later, rather than watching it
+        // board, is told the same angle.
+        passenger->m_movementInfo.transport.pos.SetOrientation(CARRY_YAW);
+
+        // Everything about the gnome is now settled, so let the clients have it.
+        if (Creature* gnome = passenger->ToCreature())
+            Reveal(gnome);
+    }
+
+protected:
+    // Map::SummonCreature applies visibleBySummonerOnly before AddToMap, so a summon
+    // flagged that way never has a create block built for it at all; and because
+    // WorldObject::CanSeeOrDetect only exempts the summoner, a creature summoner means
+    // no player sees it. That is what lets every gnome in this scene be assembled
+    // off-screen and handed over finished. These two are the on and off.
+    static void Reveal(Creature* gnome)
+    {
+        gnome->SetVisibleBySummonerOnly(false);
+        gnome->UpdateObjectVisibility();
+    }
+
+    static void Conceal(Creature* gnome)
+    {
+        gnome->SetVisibleBySummonerOnly(true);
+        gnome->UpdateObjectVisibility();
+    }
+
+    // A vehicle with a free seat advertises itself as clickable. Vehicle::Install sets
+    // UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and Vehicle::RemovePassenger sets
+    // it again the moment one empties; VehicleJoinEvent only takes it off when the last
+    // usable seat fills. So the Operative wears it from the hand-off at the bed until
+    // the next gnome boards, which is the whole walk home -- the client draws the cog
+    // cursor and offers an interaction that does not exist. 46449 has no
+    // npc_spellclick_spells rows at all, so a click was never going to do anything.
+    //
+    // Cleared from three places rather than polled: Reset, the walk-out task (which
+    // covers Vehicle::Install, since Creature::AddToWorld runs it after AIM_Initialize
+    // and therefore after Reset), and PassengerBoarded on the way out.
+    void ClearSpellClick()
+    {
+        if (me->HasFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+            me->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+    }
+
+    // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
+    // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
+    // Spell::CheckCast in the way of a cast that has no business failing -- and when it
+    // does fail it says nothing, applies no SPELL_AURA_CONTROL_VEHICLE, and so never
+    // queues the VehicleJoinEvent. The gnome is left standing at the spawn point and the
+    // Operative walks the path with an empty back.
+    bool BoardGnome(Creature* gnome)
+    {
+        return gnome->CastCustomSpell(VEHICLE_SPELL_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0,
+            SEAT_INJURED_GNOME + 1, me, TRIGGERED_FULL_MASK);
+    }
+};
+
+struct npc_safe_operative_carrier : public npc_safe_operative_bearer
+{
+    npc_safe_operative_carrier(Creature* creature) : npc_safe_operative_bearer(creature) { }
 
     void Reset() override
     {
@@ -482,31 +606,6 @@ struct npc_safe_operative_carrier : public ScriptedAI
             EndRun();
     }
 
-    // This Operative never fights, and the run breaks if it tries. A victim means
-    // ChaseMovementGenerator, which takes MOTION_SLOT_ACTIVE off the carry spline and
-    // walks the Operative off the ramp with the gnome still on its back; the end of
-    // the fight then leaves it standing wherever it stopped, because the arrival that
-    // would have driven the rest of the scene never comes. The evade after it is
-    // worse: MoveTargetedHome ends in LoadCreaturesAddon, which clears the anim kit,
-    // so it walks home in the carry pose and loses it on arrival.
-    //
-    // REACT_PASSIVE alone does not cover this. It stops the Operative choosing a
-    // target of its own, but AttackStart is reachable without it -- another creature's
-    // AI calling it directly, an assist, a spell that forces a target. The two
-    // overrides make the AI structurally incapable of taking a victim rather than
-    // merely disinclined to look for one.
-    //
-    // creature_template.unit_flags 768 is IMMUNE_TO_PC | IMMUNE_TO_NPC, so nothing can
-    // attack the Operative either. That flag stays in the database rather than being
-    // re-asserted here, the same way the sparring Operatives leave their sheath state
-    // to creature_addon.
-    void AttackStart(Unit* /*who*/) override { }
-
-    // Cuts the out-of-combat LOS scan entirely. REACT_PASSIVE already makes
-    // CreatureAI::MoveInLineOfSight return without aggroing, so this changes no
-    // behaviour -- it only stops the Operative running that check against every unit
-    // it passes on a walk that crosses the length of the camp twice a minute.
-    void MoveInLineOfSight(Unit* /*who*/) override { }
 
     void UpdateAI(uint32 diff) override
     {
@@ -515,93 +614,8 @@ struct npc_safe_operative_carrier : public ScriptedAI
         _scheduler.Update(diff);
     }
 
-    // VehicleJoinEvent::Execute finishes the boarding with init.SetFacing(0.0f), and
-    // nothing in this core ever reads VehicleSeatEntry::PassengerYaw, so every passenger
-    // ends up facing straight along the vehicle's local X axis whatever the seat asked
-    // for. On this seat that leaves the gnome lying at the wrong angle across the
-    // Operative, so the transport-enter spline is re-issued with the facing the carry
-    // wants. The offset is read back from what the join event just wrote, which keeps
-    // the seat's own attachment point rather than hard-coding it here.
-    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
-    {
-        if (!passenger)
-            return;
-
-        if (!apply)
-        {
-            // Vehicle::RemovePassenger puts UNIT_NPC_FLAG_SPELLCLICK back on as its very
-            // first act, and this hook is its last, so here is where it comes off again.
-            // Without this the cog sits on the Operative for the whole walk home.
-            ClearSpellClick();
-            return;
-        }
-
-        // By value, not by reference: the orientation is written back to this same
-        // member a few lines down.
-        Position const seat = passenger->m_movementInfo.transport.pos;
-
-        Movement::MoveSplineInit init(passenger);
-        init.DisableTransportPathTransformations();
-        init.MoveTo(seat.GetPositionX(), seat.GetPositionY(), seat.GetPositionZ(), false, true);
-        init.SetFacing(CARRY_YAW);
-        init.SetTransportEnter();
-        init.Launch();
-
-        // So that a client which streams the gnome in later, rather than watching it
-        // board, is told the same angle.
-        passenger->m_movementInfo.transport.pos.SetOrientation(CARRY_YAW);
-
-        // Everything about the gnome is now settled, so let the clients have it.
-        if (Creature* gnome = passenger->ToCreature())
-            Reveal(gnome);
-    }
 
 private:
-    // Map::SummonCreature applies visibleBySummonerOnly before AddToMap, so a summon
-    // flagged that way never has a create block built for it at all; and because
-    // WorldObject::CanSeeOrDetect only exempts the summoner, a creature summoner means
-    // no player sees it. That is what lets every gnome in this scene be assembled
-    // off-screen and handed over finished. These two are the on and off.
-    static void Reveal(Creature* gnome)
-    {
-        gnome->SetVisibleBySummonerOnly(false);
-        gnome->UpdateObjectVisibility();
-    }
-
-    static void Conceal(Creature* gnome)
-    {
-        gnome->SetVisibleBySummonerOnly(true);
-        gnome->UpdateObjectVisibility();
-    }
-
-    // A vehicle with a free seat advertises itself as clickable. Vehicle::Install sets
-    // UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and Vehicle::RemovePassenger sets
-    // it again the moment one empties; VehicleJoinEvent only takes it off when the last
-    // usable seat fills. So the Operative wears it from the hand-off at the bed until
-    // the next gnome boards, which is the whole walk home -- the client draws the cog
-    // cursor and offers an interaction that does not exist. 46449 has no
-    // npc_spellclick_spells rows at all, so a click was never going to do anything.
-    //
-    // Cleared from three places rather than polled: Reset, the walk-out task (which
-    // covers Vehicle::Install, since Creature::AddToWorld runs it after AIM_Initialize
-    // and therefore after Reset), and PassengerBoarded on the way out.
-    void ClearSpellClick()
-    {
-        if (me->HasFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
-            me->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
-    }
-
-    // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
-    // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
-    // Spell::CheckCast in the way of a cast that has no business failing -- and when it
-    // does fail it says nothing, applies no SPELL_AURA_CONTROL_VEHICLE, and so never
-    // queues the VehicleJoinEvent. The gnome is left standing at the spawn point and the
-    // Operative walks the path with an empty back.
-    bool BoardGnome(Creature* gnome)
-    {
-        return gnome->CastCustomSpell(VEHICLE_SPELL_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0,
-            SEAT_INJURED_GNOME + 1, me, TRIGGERED_FULL_MASK);
-    }
 
     void PlaceGnome()
     {
@@ -698,9 +712,114 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum SafeOperativeMedic
+{
+    // Each kneeling Operative and the casualty it holds. Fixed pairs, so they are named
+    // rather than found by proximity: the wrong gnome is only 4.8 yards from the lower
+    // Operative, close enough that a radius search would be a coin toss.
+    GUID_MEDIC_UPPER    = 168986,
+    GUID_CASUALTY_UPPER = 168987,
+    GUID_MEDIC_LOWER    = 169017,
+    GUID_CASUALTY_LOWER = 169004,
+
+    // A group each, not one group of two. Neither Operative rotates its line -- each
+    // said the same one every time it spoke, three times apiece, which is not chance.
+    SAY_MEDIC_UPPER     = 0,
+    SAY_MEDIC_LOWER     = 1
+};
+
+// Between one Operative's repeats the gap was 85 seconds and then 161, and for the other
+// 75 and then 145. The wide ones are barks that went out while the player was too far
+// away to be sent them, so the period is the short one.
+static constexpr Seconds MEDIC_BARK_MIN = Seconds(70);
+static constexpr Seconds MEDIC_BARK_MAX = Seconds(90);
+
+// Two Operatives down in the camp, each kneeling over an Injured Gnome it is holding and
+// talking to. The holding is the same vehicle seat the carrier uses; the difference is
+// that these two never stand up and never go anywhere.
+//
+// EMOTE_STATE_KNEEL and ANIM_KIT_CARRY are both set, which is the one part of this that
+// is a guess rather than a reading: the anim kit is the standing carry pose. If the two
+// fight each other in game, dropping either one is a one-line change -- the gnome stays
+// in the arms regardless, because that is the vehicle seat and not the animation.
+struct npc_safe_operative_medic : public npc_safe_operative_bearer
+{
+    npc_safe_operative_medic(Creature* creature) : npc_safe_operative_bearer(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        me->SetReactState(REACT_PASSIVE);
+        ClearSpellClick();
+
+        me->SetAIAnimKitId(ANIM_KIT_CARRY);
+        me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_KNEEL);
+
+        // The casualty is a database spawn rather than a summon, so it is already in the
+        // world and only has to be seated.
+        if (Creature* gnome = FindCasualty())
+            if (!gnome->GetVehicle())
+                BoardGnome(gnome);
+
+        _scheduler.Schedule(MEDIC_BARK_MIN, MEDIC_BARK_MAX, [this](TaskContext task)
+        {
+            Talk(BarkGroup());
+            task.Repeat(MEDIC_BARK_MIN, MEDIC_BARK_MAX);
+        });
+
+        // Vehicle::Install runs after Reset -- Creature::AddToWorld calls it after
+        // AIM_Initialize -- so the cog it puts on has to come off again once it has.
+        // This also picks up a casualty that did not board first time; boarding is
+        // asynchronous, so it cannot be checked any earlier than this.
+        _scheduler.Schedule(Seconds(3), [this](TaskContext task)
+        {
+            ClearSpellClick();
+
+            if (Creature* gnome = FindCasualty())
+            {
+                if (!gnome->GetVehicle())
+                {
+                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_medic: %s is not holding casualty " UI64FMTD ", retrying",
+                        me->GetGUID().ToString().c_str(), uint64(CasualtySpawnId()));
+                    BoardGnome(gnome);
+                    task.Repeat(Seconds(10));
+                }
+            }
+            else
+                TC_LOG_ERROR("scripts.ai", "npc_safe_operative_medic: %s found no casualty " UI64FMTD " to hold",
+                    me->GetGUID().ToString().c_str(), uint64(CasualtySpawnId()));
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    bool IsLower() const { return me->GetSpawnId() == GUID_MEDIC_LOWER; }
+
+    ObjectGuid::LowType CasualtySpawnId() const
+    {
+        return IsLower() ? GUID_CASUALTY_LOWER : GUID_CASUALTY_UPPER;
+    }
+
+    uint8 BarkGroup() const { return IsLower() ? SAY_MEDIC_LOWER : SAY_MEDIC_UPPER; }
+
+    Creature* FindCasualty() const
+    {
+        auto bounds = me->GetMap()->GetCreatureBySpawnIdStore().equal_range(CasualtySpawnId());
+        return bounds.first != bounds.second ? bounds.first->second : nullptr;
+    }
+
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
     RegisterCreatureAI(npc_safe_operative_barker);
     RegisterCreatureAI(npc_safe_operative_carrier);
+    RegisterCreatureAI(npc_safe_operative_medic);
 }

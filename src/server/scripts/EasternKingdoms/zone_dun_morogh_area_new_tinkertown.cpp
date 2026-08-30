@@ -20,11 +20,14 @@
 #include "Duration.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
+#include "Vehicle.h"
+#include <cmath>
 #include <type_traits>
 #include <vector>
 
@@ -327,6 +330,13 @@ static constexpr Milliseconds PLACED_GNOME_LIFETIME  = Milliseconds(20600);
 // second late.
 static constexpr Seconds RESPAWN_DELAY = Seconds(3);
 
+// How far the gnome is turned in the seat, in transport-local radians. It lies across
+// the Operative's arms rather than along them, and orientation grows counter-clockwise,
+// so this is a quarter turn counter-clockwise from the way the seat would otherwise
+// leave it. If the model still reads wrong in game, the other two quarter turns are
+// -CARRY_YAW and CARRY_YAW + M_PI; nothing else needs to change with it.
+static constexpr float CARRY_YAW = float(M_PI) / 2.0f;
+
 // The bed, taken from creature guid 169319 -- the static Injured Gnome this scene
 // replaces.
 Position const GnomeBedPosition = { -4974.72f, 872.908f, 274.392f, 3.7001f };
@@ -401,21 +411,30 @@ struct npc_safe_operative_carrier : public ScriptedAI
         if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
         {
             _passenger = gnome->GetGUID();
-            gnome->EnterVehicle(me, SEAT_INJURED_GNOME);
+            BoardGnome(gnome);
         }
 
         _scheduler.Schedule(PICKUP_TO_WALK, [this](TaskContext /*task*/)
         {
             // Vehicle::AddPassenger schedules the join through a VehicleJoinEvent
-            // rather than seating anyone inline, so the seat is still empty when
-            // EnterVehicle returns and there is nothing to check at the call site. By
-            // now it has run, and an Operative that walks the whole path with no gnome
-            // on its back is otherwise indistinguishable from one that is carrying an
-            // invisible one.
+            // rather than seating anyone inline, so the seat is still empty when the
+            // cast returns and there is nothing to check at the call site. By now it has
+            // run, so this is the first honest answer about whether the gnome is aboard.
+            //
+            // One retry, because an Operative walking the whole path with an empty back
+            // is the failure this scene shows when boarding does not take, and it is
+            // silent otherwise. Walking goes ahead either way -- a gnome that boards a
+            // tick late snaps onto the back, which is better than a run that never
+            // starts.
             if (Creature* gnome = ObjectAccessor::GetCreature(*me, _passenger))
+            {
                 if (!gnome->GetVehicle())
-                    TC_LOG_DEBUG("scripts.ai", "npc_safe_operative_carrier: %s never boarded %s, walking empty",
+                {
+                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_carrier: %s did not board %s, retrying",
                         gnome->GetGUID().ToString().c_str(), me->GetGUID().ToString().c_str());
+                    BoardGnome(gnome);
+                }
+            }
 
             // walk true is the whole reason this is MoveSmoothPath and not a chain of
             // MovePoint calls: PointMovementGenerator::DoInitialize never touches
@@ -472,7 +491,47 @@ struct npc_safe_operative_carrier : public ScriptedAI
         _scheduler.Update(diff);
     }
 
+    // VehicleJoinEvent::Execute finishes the boarding with init.SetFacing(0.0f), and
+    // nothing in this core ever reads VehicleSeatEntry::PassengerYaw, so every passenger
+    // ends up facing straight along the vehicle's local X axis whatever the seat asked
+    // for. On this seat that leaves the gnome lying at the wrong angle across the
+    // Operative, so the transport-enter spline is re-issued with the facing the carry
+    // wants. The offset is read back from what the join event just wrote, which keeps
+    // the seat's own attachment point rather than hard-coding it here.
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (!apply || !passenger)
+            return;
+
+        // By value, not by reference: the orientation is written back to this same
+        // member a few lines down.
+        Position const seat = passenger->m_movementInfo.transport.pos;
+
+        Movement::MoveSplineInit init(passenger);
+        init.DisableTransportPathTransformations();
+        init.MoveTo(seat.GetPositionX(), seat.GetPositionY(), seat.GetPositionZ(), false, true);
+        init.SetFacing(CARRY_YAW);
+        init.SetTransportEnter();
+        init.Launch();
+
+        // So that a client which streams the gnome in later, rather than watching it
+        // board, is told the same angle.
+        passenger->m_movementInfo.transport.pos.SetOrientation(CARRY_YAW);
+    }
+
 private:
+    // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
+    // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
+    // Spell::CheckCast in the way of a cast that has no business failing -- and when it
+    // does fail it says nothing, applies no SPELL_AURA_CONTROL_VEHICLE, and so never
+    // queues the VehicleJoinEvent. The gnome is left standing at the spawn point and the
+    // Operative walks the path with an empty back.
+    bool BoardGnome(Creature* gnome)
+    {
+        return gnome->CastCustomSpell(VEHICLE_SPELL_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0,
+            SEAT_INJURED_GNOME + 1, me, TRIGGERED_FULL_MASK);
+    }
+
     void PlaceGnome()
     {
         // The path ends a yard short of the bed with the Operative still facing down

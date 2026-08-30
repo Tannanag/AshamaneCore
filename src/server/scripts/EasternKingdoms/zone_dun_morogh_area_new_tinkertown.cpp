@@ -19,9 +19,9 @@
 #include "Creature.h"
 #include "Duration.h"
 #include "Log.h"
-#include "Player.h"
 #include "MotionMaster.h"
 #include "ObjectAccessor.h"
+#include "Player.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
@@ -281,6 +281,8 @@ struct npc_safe_operative_barker : public ScriptedAI
 private:
     uint32 _cooldown = 0;
     uint32 _poll = 0;
+};
+
 enum SafeOperativeCarrier
 {
     NPC_INJURED_GNOME       = 46447,

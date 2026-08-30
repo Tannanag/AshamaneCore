@@ -19,6 +19,7 @@
 #include "Creature.h"
 #include "Duration.h"
 #include "Log.h"
+#include "Player.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 
@@ -116,7 +117,15 @@ struct npc_safe_operative_sparring : public ScriptedAI
             return;
 
         if (me->Attack(who, false))
+        {
+            // Unit::Attack wipes UNIT_NPC_EMOTESTATE on any creature that starts a
+            // fight, on the assumption that the creature will evade later and
+            // LoadCreaturesAddon will put it back. These never evade -- the sparring
+            // cap keeps both sides alive indefinitely -- so the ready-rifle stance
+            // from creature_addon would be gone for the rest of the uptime.
+            me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_READY_RIFLE);
             DoStartNoMovement(who);
+        }
     }
 
     void UpdateAI(uint32 diff) override
@@ -162,7 +171,115 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum SafeOperativeBarker
+{
+    // creature_text group for "Our men have secured the walkway."
+    SAY_WALKWAY_SECURED = 0,
+
+    NPC_SAFE_OPERATIVE  = 45847
+};
+
+// Retail fires this bark at about 2.5 yards. Across three approaches the player
+// crossed 7.5, 5.6 and 3.2 yards in silence and the line went out between 2.3 and
+// 1.7.
+//
+// This is the whole reason the bark is not SmartAI. SMART_EVENT_OOC_LOS compares
+// against maxDist plus both combat reaches -- 1.725 for the Operative, 1.5 for the
+// player -- so its smallest usable radius is 4.2 yards, and the 8 it was set to was
+// really 11.2. The two barkers stand 19 yards apart, so those circles overlapped
+// across the middle of the walkway and a player standing there set off both.
+static constexpr float BARK_RADIUS = 2.5f;
+
+// Long enough to reach the other barker 19 yards away, short enough to stop before
+// the sparring pairs further down the camp.
+static constexpr float BARK_PARTNER_RANGE = 25.0f;
+
+// A player running the walkway covers the 19 yards between the two in under three
+// seconds. The radii can no longer overlap, but two barks that close still read as
+// both of them talking at once, so whichever speaks first holds the other quiet.
+static constexpr uint32 BARK_PARTNER_SILENCE = 10 * IN_MILLISECONDS;
+
+// Unchanged from the smart_scripts row this replaces.
+static constexpr uint32 BARK_COOLDOWN_MIN = 45 * IN_MILLISECONDS;
+static constexpr uint32 BARK_COOLDOWN_MAX = 90 * IN_MILLISECONDS;
+
+// 250ms rather than a full second: at run speed a player covers about 1.75 yards
+// between polls, which is already most of the 2.5-yard radius.
+static constexpr uint32 BARK_POLL_INTERVAL = 250;
+
+// The two S.A.F.E. Operatives on the walkway above the camp, 984707 and 984708.
+// They ignore the fight below and greet players who walk right up to them.
+struct npc_safe_operative_barker : public ScriptedAI
+{
+    npc_safe_operative_barker(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _cooldown = 0;
+        _poll = 0;
+    }
+
+    // Called by the other barker, not from here. Only ever extends the wait, so the
+    // partner's own post-bark cooldown is never cut short.
+    void SilenceFor(uint32 ms)
+    {
+        if (ms > _cooldown)
+            _cooldown = ms;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_cooldown)
+        {
+            _cooldown = _cooldown > diff ? _cooldown - diff : 0;
+            return;
+        }
+
+        if (_poll > diff)
+        {
+            _poll -= diff;
+            return;
+        }
+
+        _poll = BARK_POLL_INTERVAL;
+
+        if (me->IsInCombat())
+            return;
+
+        // SelectNearestPlayer pads the range with both combat reaches the same way
+        // the smart event does, so it is used only to pick the nearest candidate;
+        // the radius itself is enforced on the raw distance.
+        Player* player = me->SelectNearestPlayer(BARK_RADIUS);
+        if (!player || me->GetExactDist(player) > BARK_RADIUS)
+            return;
+
+        if (!me->IsWithinLOSInMap(player))
+            return;
+
+        Talk(SAY_WALKWAY_SECURED, player);
+        _cooldown = urand(BARK_COOLDOWN_MIN, BARK_COOLDOWN_MAX);
+
+        std::list<Creature*> neighbours;
+        me->GetCreatureListWithEntryInGrid(neighbours, NPC_SAFE_OPERATIVE, BARK_PARTNER_RANGE);
+        for (Creature* neighbour : neighbours)
+        {
+            if (neighbour == me)
+                continue;
+
+            // dynamic_cast: most of the 45847 spawns in range are sparring or plain
+            // SmartAI, and only another barker answers this.
+            if (npc_safe_operative_barker* partner = CAST_AI(npc_safe_operative_barker, neighbour->AI()))
+                partner->SilenceFor(BARK_PARTNER_SILENCE);
+        }
+    }
+
+private:
+    uint32 _cooldown = 0;
+    uint32 _poll = 0;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
+    RegisterCreatureAI(npc_safe_operative_barker);
 }

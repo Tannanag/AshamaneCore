@@ -401,6 +401,8 @@ struct npc_safe_operative_carrier : public ScriptedAI
         // the camp. See AttackStart and MoveInLineOfSight below for the other two.
         me->SetReactState(REACT_PASSIVE);
 
+        ClearSpellClick();
+
         // Reset runs on respawn, and on anything that cuts a run short -- a grid
         // unload, a .reload. Without this the gnomes from the abandoned run stay.
         DespawnGnome(_passenger);
@@ -453,6 +455,10 @@ struct npc_safe_operative_carrier : public ScriptedAI
                     BoardGnome(gnome);
                 }
             }
+
+            // Vehicle::Install runs after Reset, and a boarding that failed leaves a
+            // seat open, so this is the one place that catches both.
+            ClearSpellClick();
 
             // walk true is the whole reason this is MoveSmoothPath and not a chain of
             // MovePoint calls: PointMovementGenerator::DoInitialize never touches
@@ -518,8 +524,17 @@ struct npc_safe_operative_carrier : public ScriptedAI
     // the seat's own attachment point rather than hard-coding it here.
     void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
     {
-        if (!apply || !passenger)
+        if (!passenger)
             return;
+
+        if (!apply)
+        {
+            // Vehicle::RemovePassenger puts UNIT_NPC_FLAG_SPELLCLICK back on as its very
+            // first act, and this hook is its last, so here is where it comes off again.
+            // Without this the cog sits on the Operative for the whole walk home.
+            ClearSpellClick();
+            return;
+        }
 
         // By value, not by reference: the orientation is written back to this same
         // member a few lines down.
@@ -557,6 +572,23 @@ private:
     {
         gnome->SetVisibleBySummonerOnly(true);
         gnome->UpdateObjectVisibility();
+    }
+
+    // A vehicle with a free seat advertises itself as clickable. Vehicle::Install sets
+    // UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and Vehicle::RemovePassenger sets
+    // it again the moment one empties; VehicleJoinEvent only takes it off when the last
+    // usable seat fills. So the Operative wears it from the hand-off at the bed until
+    // the next gnome boards, which is the whole walk home -- the client draws the cog
+    // cursor and offers an interaction that does not exist. 46449 has no
+    // npc_spellclick_spells rows at all, so a click was never going to do anything.
+    //
+    // Cleared from three places rather than polled: Reset, the walk-out task (which
+    // covers Vehicle::Install, since Creature::AddToWorld runs it after AIM_Initialize
+    // and therefore after Reset), and PassengerBoarded on the way out.
+    void ClearSpellClick()
+    {
+        if (me->HasFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+            me->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
     }
 
     // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with

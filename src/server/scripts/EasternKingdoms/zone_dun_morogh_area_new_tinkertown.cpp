@@ -408,15 +408,26 @@ struct npc_safe_operative_carrier : public ScriptedAI
 
         me->SetAIAnimKitId(ANIM_KIT_CARRY);
 
-        // Summoned hidden. Boarding is not instant -- the seat is filled by a
-        // VehicleJoinEvent a tick later, and the client plays the seat's enter
-        // animation over the top of it -- so a gnome that were visible from the start
-        // would be seen lying on the ground and climbing aboard. Hidden, the first
-        // thing any client is told about it is the create block sent from
-        // PassengerBoarded, by which point it is already in the Operative's arms and
-        // turned the right way.
-        if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN, 0, 0, true))
+        // Hidden immediately, not summoned hidden. SummonCreature's own
+        // visibleBySummonerOnly argument does nothing to a creature: TempSummon
+        // redeclares m_visibleBySummonerOnly and its accessors, shadowing WorldObject's,
+        // so Map::SummonCreature writes the TempSummon copy while
+        // WorldObject::CanSeeOrDetect reads the WorldObject one. Conceal goes through a
+        // Creature*, which resolves to WorldObject's setter, and does hide it.
+        //
+        // Do not "fix" that by deleting the duplicate. Around fifteen scripts pass true
+        // in that argument position with a creature summoner -- the Dun Morogh trolls,
+        // Duskwood's Stitches, the Loch Modan ambushers -- and they only still appear
+        // because the flag is inert. Making it work turns all of them invisible.
+        //
+        // Boarding is worth hiding through: the seat is filled by a VehicleJoinEvent a
+        // tick after the cast and the client plays the seat's enter animation over the
+        // top, so a visible gnome is seen on the ground climbing aboard. Concealed, the
+        // next thing any client hears is the create block from PassengerBoarded, with
+        // the gnome already carried and already turned.
+        if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
         {
+            Conceal(gnome);
             _passenger = gnome->GetGUID();
             BoardGnome(gnome);
         }
@@ -580,21 +591,15 @@ private:
             // seat's exit arc instead of leaving it where it was set down.
             DespawnGnome(_passenger);
 
-            // Hidden again, for a different reason: Creature::UpdateEntry runs
-            // LoadCreaturesAddon before AddToMap, and creature_template_addon has 46447
-            // standing, so a visible summon is created on its feet and only lies down
-            // when the stand state that follows reaches the client -- with the whole
-            // transition animation played out in the bed. Setting it before the reveal
-            // puts UNIT_STAND_STATE_SLEEP in the create block instead, so the gnome has
-            // never been anything but lying there.
-            if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, GnomeBedPosition, TEMPSUMMON_MANUAL_DESPAWN, 0, 0, true))
+            // No SetStandState here, and that is the point. Setting it after the summon
+            // is a visible transition -- the gnome is created on its feet and then lies
+            // down in the bed with the animation played out. creature_template_addon
+            // carries StandState 3 for 46447 instead, and LoadCreaturesAddon runs inside
+            // Creature::UpdateEntry before the creature reaches the map, so the gnome is
+            // lying down in the very first block a client receives about it.
+            if (TempSummon* gnome = me->SummonCreature(NPC_INJURED_GNOME, GnomeBedPosition, TEMPSUMMON_MANUAL_DESPAWN))
             {
                 _placed = gnome->GetGUID();
-                gnome->SetStandState(UNIT_STAND_STATE_SLEEP);
-                Reveal(gnome);
-
-                // After the reveal, so the cast itself is something the clients see
-                // rather than an aura that was always there.
                 gnome->CastSpell(gnome, SPELL_IRRADIATION, true);
             }
         });

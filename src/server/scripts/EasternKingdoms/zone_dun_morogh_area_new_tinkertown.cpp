@@ -1430,6 +1430,29 @@ private:
         if (Vehicle* kit = me->GetVehicleKit())
             kit->RemoveAllPassengers();
 
+        // The despawn cannot help dropping the device: DespawnOrUnsummon kills it first,
+        // and Creature::setDeathState JUST_DIED sends a flying corpse to the floor with
+        // MotionMaster::MoveFall. The guard on that is CanFly() || IsFlying(), and
+        // Creature::CanFly reads InhabitType straight off the template (Creature.h:107) --
+        // 46012 is InhabitType 4, so it is true for as long as the device flies at all.
+        // No movement flag the script can set will turn it off.
+        //
+        // So the fall is left to happen and taken away from the clients instead. The
+        // device is destroyed for everyone in range first, and the monster-move that
+        // follows a moment later names a GUID they no longer hold and is discarded. What
+        // is left to watch is the device blinking out at its post, which is what the
+        // despawn was always meant to look like.
+        //
+        // Nothing has to put this back: Creature::Respawn opens with its own
+        // DestroyForNearbyPlayers and closes with UpdateObjectVisibility, so the device
+        // is built again from scratch on every client that can see it -- and by then
+        // Reset has already run, so it is created with its gravity in the right state.
+        //
+        // After the passengers, not before. The gnome is drawn attached to the device
+        // while it is seated, so a device taken off the clients with the seat still full
+        // takes the gnome's own exit and fall with it.
+        me->DestroyForNearbyPlayers();
+
         me->DespawnOrUnsummon(Milliseconds(0), TAD_RESPAWN_DELAY);
     }
 

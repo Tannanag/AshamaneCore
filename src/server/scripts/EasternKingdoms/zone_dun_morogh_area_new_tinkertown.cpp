@@ -844,6 +844,7 @@ enum TargetAcquisitionDevice
     POINT_TAD_TARGET         = 10,
     POINT_TAD_DROP           = 11,
     POINT_TAD_ROAM           = 12,
+    POINT_TAD_HOME           = 13,
 
     // The device hands its gnome to the squad through UnitAI::SetGUID, which is a no-op
     // on every AI that does not override it -- so the sparring Operatives standing a few
@@ -908,9 +909,11 @@ static constexpr float TAD_SEARCH_RANGE = 60.0f;
 // the same gnome from opposite ends of the camp.
 static constexpr float TAD_PEER_RANGE   = 150.0f;
 
-// A device is out for a little under thirty-four seconds: about two and a half spent
-// choosing, two channelling, twenty-nine carrying, and it is back five seconds after it
-// goes.
+// A roaming device is out for a little under thirty-four seconds: about two and a half
+// spent choosing, two channelling, twenty-nine holding, and it is back five seconds after
+// it goes. A device with a firing squad runs longer and to no fixed length -- the hold
+// stops governing it once it has arrived, and what is left is the execution and the
+// flight home.
 static constexpr Milliseconds TAD_ACQUIRE_DELAY = Milliseconds(2400);
 static constexpr Milliseconds TAD_BEAM_CHANNEL  = Milliseconds(2000);
 static constexpr Milliseconds TAD_RETRY_DELAY   = Milliseconds(1000);
@@ -925,10 +928,18 @@ static constexpr Seconds      TAD_RESPAWN_DELAY = Seconds(5);
 static constexpr Milliseconds TAD_EXECUTION_LIMIT = Milliseconds(20000);
 static constexpr Milliseconds TAD_EXECUTION_POLL  = Milliseconds(500);
 
-// Unit::setDeathState unseats the gnome itself, so the body is already falling out of
-// the beam when the device notices the kill. This is how long it is given to land before
-// the device leaves.
-static constexpr Milliseconds TAD_BODY_FALL = Milliseconds(1500);
+// Unit::setDeathState unseats the gnome itself, so the body is already falling out of the
+// beam by the time the device notices the kill. The device holds its position over it for
+// this long -- the fall, and a beat after it -- before turning for home. Going the moment
+// the body was clear read as the device being switched off rather than as one finishing a
+// job.
+static constexpr Milliseconds TAD_LINGER_AFTER_KILL = Milliseconds(5000);
+
+// A device that is done with a gnome flies back to its own post before it goes, so the
+// despawn happens where the respawn will put it back rather than over the firing squad.
+// The backstop covers a return that never arrives -- a blocked path, a post that moved --
+// so a device cannot hang over the depot for ever with nothing left to do.
+static constexpr Milliseconds TAD_RETURN_BACKSTOP = Milliseconds(15000);
 
 // Re-path only once the gnome has walked this far from where the approach was aimed,
 // so a wandering target does not restart the spline on every poll.
@@ -1016,6 +1027,7 @@ struct npc_target_acquisition_device : public ScriptedAI
         _claimed.Clear();
         _approaching = false;
         _executing = false;
+        _leaving = false;
         _executionLeft = TAD_EXECUTION_LIMIT;
         _carry = nullptr;
 
@@ -1065,10 +1077,15 @@ struct npc_target_acquisition_device : public ScriptedAI
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        // The approach and the roam use the same generator and are of no interest; only
-        // the arrival at a firing squad starts anything.
-        if (type == POINT_MOTION_TYPE && id == POINT_TAD_DROP)
+        if (type != POINT_MOTION_TYPE)
+            return;
+
+        // The approach and the roam are of no interest; the other two ends of a carrier's
+        // run are the whole of its script.
+        if (id == POINT_TAD_DROP)
             Condemn();
+        else if (id == POINT_TAD_HOME)
+            ReleaseAndDespawn();
     }
 
     void UpdateAI(uint32 diff) override
@@ -1114,7 +1131,7 @@ private:
         Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
         if (!gnome || !gnome->IsAlive())
         {
-            _scheduler.Schedule(TAD_BODY_FALL, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
+            _scheduler.Schedule(TAD_LINGER_AFTER_KILL, [this](TaskContext /*task*/) { GoHome(); });
             return;
         }
 
@@ -1127,7 +1144,7 @@ private:
                 me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str(),
                 uint32(TAD_EXECUTION_LIMIT.count()), gnome->GetHealthPct());
 
-            ReleaseAndDespawn();
+            GoHome();
             return;
         }
 
@@ -1282,6 +1299,30 @@ private:
         });
     }
 
+    // The end of a carrier's run, whether the squad killed the gnome or the execution
+    // timed out with it still standing. The device lets go here and then flies back to
+    // its post under its own power: the despawn belongs at the spawn point, because that
+    // is where the respawn five seconds later puts the next one, and a device that
+    // vanished over the firing squad and reappeared at its post was the same jump played
+    // twice.
+    void GoHome()
+    {
+        if (_leaving)
+            return;
+
+        _leaving = true;
+
+        // The seat is empty by now on the path that got here through a kill, and holds a
+        // live gnome on the one that timed out. Either way it is emptied before the return
+        // starts, so nothing is carried home.
+        if (Vehicle* kit = me->GetVehicleKit())
+            kit->RemoveAllPassengers();
+
+        me->GetMotionMaster()->MovePoint(POINT_TAD_HOME, me->GetHomePosition(), false);
+
+        _scheduler.Schedule(TAD_RETURN_BACKSTOP, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
+    }
+
     void ReleaseAndDespawn()
     {
         // Explicitly, before the despawn. Vehicle::Uninstall would clear the seat anyway,
@@ -1369,6 +1410,7 @@ private:
     Position _approachTo;
     bool _approaching = false;
     bool _executing = false;
+    bool _leaving = false;
     Milliseconds _executionLeft = TAD_EXECUTION_LIMIT;
     TadPost const* _carry = nullptr;
 };

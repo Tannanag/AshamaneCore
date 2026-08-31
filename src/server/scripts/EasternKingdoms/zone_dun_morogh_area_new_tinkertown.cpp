@@ -917,15 +917,76 @@ static constexpr Milliseconds TAD_RETRY_DELAY   = Milliseconds(1000);
 static constexpr Seconds      TAD_HOLD_TIME     = Seconds(29);
 static constexpr Seconds      TAD_RESPAWN_DELAY = Seconds(5);
 
+// A device that reaches a firing squad holds the gnome up until the squad has killed it,
+// and the hold above stops governing the run. The cap is only here so a shot that never
+// lands cannot strand a device over the depot for ever: one volley of 208193 is several
+// times a Crazed Leper Gnome's health, so a shot that connects ends the execution
+// immediately and the next poll starts the walk back.
+static constexpr Milliseconds TAD_EXECUTION_LIMIT = Milliseconds(20000);
+static constexpr Milliseconds TAD_EXECUTION_POLL  = Milliseconds(500);
+
+// Unit::setDeathState unseats the gnome itself, so the body is already falling out of
+// the beam when the device notices the kill. This is how long it is given to land before
+// the device leaves.
+static constexpr Milliseconds TAD_BODY_FALL = Milliseconds(1500);
+
 // Re-path only once the gnome has walked this far from where the approach was aimed,
 // so a wandering target does not restart the spline on every poll.
 static constexpr float TAD_REPATH_TOLERANCE = 5.0f;
 
-// The devices hanging over the Train Depot pick a Crazed Leper Gnome off the floor, hold
-// it up for half a minute and drop it. The interesting part is the choosing: a gnome
-// already in a seat, or already spoken for by a device still on its way over, has to be
-// invisible to every other device, or several of them converge on one gnome and the rest
-// of the floor is never touched.
+// A gnome in a device's grip is cargo, not a combatant. Boarding a vehicle seat settles
+// where it is drawn and nothing else about it: a gnome that was mid-fight when the beam
+// took it goes on swinging from the air, and one the firing squad shoots at answers by
+// picking a target of its own. UNIT_FLAG_PACIFIED is refused by Unit::Attack outright,
+// UNIT_FLAG_SILENCED by Spell::CheckCast, and REACT_PASSIVE stops it looking for anyone
+// to use either on -- so CreatureAI::AttackedBy, the one route into a fight that does
+// not go through target selection, finds nothing it is allowed to do.
+//
+// Movement needs nothing: the seat holds it.
+static void RestrainGnome(Creature* gnome)
+{
+    gnome->SetReactState(REACT_PASSIVE);
+    gnome->AttackStop();
+    gnome->CombatStop(true);
+    gnome->DeleteThreatList();
+    gnome->SetTarget(ObjectGuid::Empty);
+    gnome->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED | UNIT_FLAG_SILENCED);
+}
+
+// Being held is no obstacle to being shot. VehicleSeat 8658, the device's only seat,
+// does not carry VEHICLE_SEAT_FLAG_PASSENGER_NOT_SELECTABLE, so nothing puts
+// UNIT_FLAG_NOT_SELECTABLE on the passenger and Unit::_IsValidAttackTarget has no
+// quarrel with a gnome in the air; and Creature::Relocate drives
+// Vehicle::RelocatePassengers, so the gnome's position tracks the device and the squad's
+// range check reads the beam rather than the floor the gnome was lifted off.
+//
+// What is left is the faction, which is the whole of it.
+static void CondemnGnome(Creature* gnome)
+{
+    gnome->setFaction(FACTION_CONDEMNED_GNOME);
+}
+
+// Undoes both of the above, and every path that lets go of a gnome comes through it --
+// including the one where it is let go because it is dead. The faction has to come off
+// the body: Creature::Respawn restores a template faction only through UpdateEntry and
+// calls that only when the entry changed, which it never does here.
+//
+// REACT_AGGRESSIVE rather than a remembered value, because that is what
+// Creature::InitializeReactState gives 46363 -- type 7, and no totem, trigger or critter.
+static void ReleaseGnome(Creature* gnome)
+{
+    gnome->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PACIFIED | UNIT_FLAG_SILENCED);
+    gnome->SetReactState(REACT_AGGRESSIVE);
+    gnome->RestoreFaction();
+}
+
+// The devices hanging over the Train Depot pick a Crazed Leper Gnome off the floor and
+// hold it up for half a minute. Ten of them drift around their post and put it back; the
+// three that have a firing squad carry it over and hold it there to be shot.
+//
+// The interesting part is the choosing: a gnome already in a seat, or already spoken for
+// by a device still on its way over, has to be invisible to every other device, or
+// several of them converge on one gnome and the rest of the floor is never touched.
 //
 // The claim lives on the AI that made it and is read back out through UnitAI::GetGUID
 // rather than kept in a registry beside the class. A device that despawns at the end of
@@ -942,8 +1003,20 @@ struct npc_target_acquisition_device : public ScriptedAI
     void Reset() override
     {
         _scheduler.CancelAll();
+
+        // A run cut short -- a grid unload, a .reload -- leaves its gnome restrained and
+        // possibly condemned, and a condemned gnome that is simply forgotten is a hostile
+        // creature standing in the middle of the depot. A despawn unseats it through
+        // Vehicle::Uninstall and that comes back as PassengerBoarded, but a Reset that
+        // does not go through one does not, so the previous run's claim is let go by hand
+        // before it is cleared.
+        if (Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed))
+            ReleaseGnome(gnome);
+
         _claimed.Clear();
         _approaching = false;
+        _executing = false;
+        _executionLeft = TAD_EXECUTION_LIMIT;
         _carry = nullptr;
 
         // From the spawn row, not from GetHomePosition. Creature::LoadCreatureFromDB calls
@@ -974,6 +1047,30 @@ struct npc_target_acquisition_device : public ScriptedAI
     void AttackStart(Unit* /*who*/) override { }
     void MoveInLineOfSight(Unit* /*who*/) override { }
 
+    // Every gnome that boards is restrained here and every gnome that leaves the seat is
+    // let go here, whichever way it leaves -- the hold running out, the device being
+    // reset, or Unit::setDeathState unseating the body of one the squad has shot. That
+    // makes this the one place either state is applied or removed.
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        Creature* gnome = passenger ? passenger->ToCreature() : nullptr;
+        if (!gnome)
+            return;
+
+        if (apply)
+            RestrainGnome(gnome);
+        else
+            ReleaseGnome(gnome);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        // The approach and the roam use the same generator and are of no interest; only
+        // the arrival at a firing squad starts anything.
+        if (type == POINT_MOTION_TYPE && id == POINT_TAD_DROP)
+            Condemn();
+    }
+
     void UpdateAI(uint32 diff) override
     {
         _scheduler.Update(diff);
@@ -981,6 +1078,63 @@ struct npc_target_acquisition_device : public ScriptedAI
 
 
 private:
+    // The device is over its firing squad with the gnome still in its grip, which is
+    // where the execution happens: the gnome is shot down out of the beam rather than
+    // set on the floor first. Handing it over on arrival instead of on release is the
+    // difference -- the squad used to be told at the end of the hold, so it was still
+    // taking aim as the device was already leaving.
+    void Condemn()
+    {
+        // One arrival per run. A second pass through here would restart the clock and
+        // hand the squad a mark it is already shooting at.
+        if (_executing)
+            return;
+
+        Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
+        if (!gnome || !gnome->IsAlive())
+        {
+            TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s reached its drop with no gnome to hand over",
+                me->GetGUID().ToString().c_str());
+            ReleaseAndDespawn();
+            return;
+        }
+
+        // Before the squad is told, so the first volley already has something it is
+        // allowed to hit.
+        CondemnGnome(gnome);
+        AlertSquad(gnome);
+
+        _executing = true;
+        _executionLeft = TAD_EXECUTION_LIMIT;
+        _scheduler.Schedule(TAD_EXECUTION_POLL, [this](TaskContext task) { WatchExecution(task); });
+    }
+
+    void WatchExecution(TaskContext task)
+    {
+        Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
+        if (!gnome || !gnome->IsAlive())
+        {
+            _scheduler.Schedule(TAD_BODY_FALL, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
+            return;
+        }
+
+        if (_executionLeft <= TAD_EXECUTION_POLL)
+        {
+            // One volley should have been enough, so a gnome still standing here means
+            // the shot is not reaching it. Said once, by the one script that knows the
+            // execution was ever meant to happen.
+            TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s held %s over its squad for %u ms and it is still up (%.0f%% hp)",
+                me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str(),
+                uint32(TAD_EXECUTION_LIMIT.count()), gnome->GetHealthPct());
+
+            ReleaseAndDespawn();
+            return;
+        }
+
+        _executionLeft -= TAD_EXECUTION_POLL;
+        task.Repeat(TAD_EXECUTION_POLL);
+    }
+
     // Runs every second until a gnome is both chosen and inside beam range.
     void Acquire(TaskContext task)
     {
@@ -1084,7 +1238,15 @@ private:
             else
                 Roam();
 
-            _scheduler.Schedule(TAD_HOLD_TIME, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
+            _scheduler.Schedule(TAD_HOLD_TIME, [this](TaskContext /*task*/)
+            {
+                // The hold is the whole run for the ten devices that have nowhere to take
+                // a gnome, and the backstop for a carrier whose approach never arrived. A
+                // carrier that did arrive is on the execution clock instead, and running
+                // out of hold in the middle of a volley would carry the gnome off alive.
+                if (!_executing)
+                    ReleaseAndDespawn();
+            });
         });
     }
 
@@ -1122,36 +1284,24 @@ private:
 
     void ReleaseAndDespawn()
     {
-        // Hand the gnome over before letting go of it, so the squad has something to
-        // shoot the moment it is on the floor. SetGUID does nothing on an AI that has not
-        // asked for it, so the sparring Operatives nearby are untouched by this.
-        if (_carry)
-        {
-            if (Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed))
-                AlertSquad(gnome);
-            else
-                TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s reached its drop with no gnome to hand over",
-                    me->GetGUID().ToString().c_str());
-        }
-
         // Explicitly, before the despawn. Vehicle::Uninstall would clear the seat anyway,
         // but going through RemoveAllPassengers is what runs the gnome's exit and leaves
-        // it standing on the floor rather than wherever the seat had it.
+        // it standing on the floor rather than wherever the seat had it -- and it is what
+        // reaches PassengerBoarded, which is where a gnome that survived the run gets its
+        // faction and its own will back.
         if (Vehicle* kit = me->GetVehicleKit())
             kit->RemoveAllPassengers();
 
         me->DespawnOrUnsummon(Milliseconds(0), TAD_RESPAWN_DELAY);
     }
 
+    // SetGUID does nothing on an AI that has not asked for it, so the sparring Operatives
+    // nearby are untouched by this.
     void AlertSquad(Creature* gnome)
     {
         std::list<Creature*> line;
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OPERATIVE_LINE, SQUAD_ALERT_RANGE);
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OFFICER_LINE, SQUAD_ALERT_RANGE);
-
-        // Before the squad is told, so the first volley already has something it is
-        // allowed to hit.
-        gnome->setFaction(FACTION_CONDEMNED_GNOME);
 
         uint32 told = 0;
         for (Creature* shooter : line)
@@ -1218,14 +1368,17 @@ private:
     ObjectGuid _claimed;
     Position _approachTo;
     bool _approaching = false;
+    bool _executing = false;
+    Milliseconds _executionLeft = TAD_EXECUTION_LIMIT;
     TadPost const* _carry = nullptr;
 };
 
 // The Operatives and the Officer standing in a line at each of the three drop points.
-// They are not sparring: nothing caps their damage against 46363, so a gnome put down in
-// front of them dies. What they must not do is join the rest of the camp's brawling --
-// they hold their line, and the only gnome they ever touch is the one a device hands
-// over.
+// They shoot the gnome a device holds up in front of them, and they shoot it out of the
+// air: nothing about a vehicle seat protects the passenger, and 46363 has no
+// creature_sparring_template row, so a volley that lands kills it. What they must not do
+// is join the rest of the camp's brawling -- they hold their line, and the only gnome
+// they ever touch is the one a device hands over.
 //
 // The target is not routed through the threat system. REACT_PASSIVE stops the Operative
 // choosing anything for itself, but it also makes Creature::SelectVictim refuse to keep a
@@ -1270,6 +1423,16 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
                 return;
             }
 
+            // A device that has to carry a live gnome off gives it its own faction back,
+            // and that is this squad's signal to stand down. Without it the line would go
+            // on firing at a gnome it is no longer allowed to hit, every few seconds,
+            // until something else happened to it.
+            if (!me->IsValidAttackTarget(gnome))
+            {
+                ReleaseMark();
+                return;
+            }
+
             if (me->IsWithinDistInMap(gnome, SQUAD_FIRE_RANGE))
             {
                 me->SetFacingToObject(gnome);
@@ -1294,10 +1457,11 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
                         uint32(me->IsValidAttackTarget(gnome)), uint32(me->IsHostileTo(gnome)));
                 }
 
-                // A triggered cast reports success whether or not the effect found a
-                // target, so the shot is not proof the gnome is being hit. If it is still
-                // standing well past the volleys that should have finished it, say so
-                // once rather than let the squad mime at it forever.
+                // A cast that was accepted is still not proof the gnome is being hit --
+                // the effect's own implicit target selection runs after it and can drop
+                // the target on its own. If the gnome is still standing well past the
+                // volleys that should have finished it, say so once rather than let the
+                // squad mime at it forever.
                 if (++_shots == SQUAD_SHOTS_BEFORE_DOUBT)
                     TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s has fired %u times at %s and it is still up (%.0f%% hp), valid=%u hostile=%u",
                         me->GetGUID().ToString().c_str(), uint32(_shots),
@@ -1315,17 +1479,21 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
     }
 
 private:
-    // The condemned faction has to come off again, and respawning will not do it:
-    // Creature::Respawn only restores the template faction through UpdateEntry, and it
-    // calls that only when the entry changed (Creature.cpp:1914), which it never
-    // does here. A gnome left wearing 14 would come back hostile to the whole camp and
-    // to any player walking past, so every path that lets go of the mark comes through
-    // here -- the kill, a gnome that wandered off, a reload.
+    // The device owns the condemned state and undoes it when the gnome leaves the seat,
+    // which covers the kill -- Unit::setDeathState unseats the body itself. This is the
+    // backstop for the marks that never get that far: a gnome that left with its grid, a
+    // reload, a device that despawned without unseating. A gnome left wearing faction 14
+    // would come back hostile to the whole camp and to any player walking past.
+    //
+    // A gnome that is still in a seat is skipped, because that is an execution in
+    // progress and the device has not finished with it; letting it go here would hand the
+    // gnome back its faction in the middle of the volley.
     void ReleaseMark()
     {
         if (me->IsInWorld() && !_mark.IsEmpty())
             if (Creature* gnome = ObjectAccessor::GetCreature(*me, _mark))
-                gnome->RestoreFaction();
+                if (!gnome->GetVehicle())
+                    ReleaseGnome(gnome);
 
         _mark.Clear();
         _warned = false;

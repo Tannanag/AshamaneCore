@@ -720,7 +720,10 @@ enum SafeOperativeMedic
     GUID_MEDIC_UPPER    = 168986,
     GUID_CASUALTY_UPPER = 168987,
     GUID_MEDIC_LOWER    = 169017,
-    GUID_CASUALTY_LOWER = 169004,
+
+    // Not 169004. That one lies in the bed on its own; 169017 was moved onto its real
+    // post and given 985000 to hold there.
+    GUID_CASUALTY_LOWER = 985000,
 
     // A group each, not one group of two. Neither Operative rotates its line -- each
     // said the same one every time it spoke, three times apiece, which is not chance.

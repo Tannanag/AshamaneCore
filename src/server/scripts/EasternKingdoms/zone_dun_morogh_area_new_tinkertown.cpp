@@ -725,11 +725,7 @@ enum SafeOperativeMedic
     // A group each, not one group of two. Neither Operative rotates its line -- each
     // said the same one every time it spoke, three times apiece, which is not chance.
     SAY_MEDIC_UPPER     = 0,
-    SAY_MEDIC_LOWER     = 1,
-
-    // Kneel and carry in one kit: the only one in the client playing both AnimID 75 and
-    // AnimID 79. See the comment in Reset for why it is a kit and not a stand state.
-    ANIM_KIT_KNEELING_CARRY = 7264
+    SAY_MEDIC_LOWER     = 1
 };
 
 // Between one Operative's repeats the gap was 85 seconds and then 161, and for the other
@@ -753,17 +749,16 @@ struct npc_safe_operative_medic : public npc_safe_operative_bearer
         me->SetReactState(REACT_PASSIVE);
         ClearSpellClick();
 
-        // Kneeling with the arms still out, which is one animation and not two: 7264 is
-        // the only kit in the client whose segments play both 75, the kneel that
-        // EMOTE_ONESHOT_KNEEL triggers, and 79, the carry that kit 989 plays. That
-        // pairing is exactly what the carrier looks like in the moment it kneels to set
-        // its gnome down, which is the look this scene wants held permanently.
+        // The kneel and the carry compose: creature_addon puts both spawns in
+        // StandState 8, UNIT_STAND_STATE_KNEEL, and the carry kit lays the arms over the
+        // top of it. Kit 989 is the same one the carrier holds while it walks.
         //
-        // It has to be an anim kit rather than the StandState 8 the addon already
-        // carries, because an anim kit outranks the stand state anyway -- so the kneel
-        // has to come from the kit or it is lost. The gnome is in the arms because of
-        // the vehicle seat and is unaffected by any of this.
-        me->SetAIAnimKitId(ANIM_KIT_KNEELING_CARRY);
+        // What must not be set alongside it is UNIT_NPC_EMOTESTATE. An earlier attempt
+        // added EMOTE_STATE_KNEEL as well, on the assumption that it would reinforce the
+        // kneel, and it did the opposite -- the emote state displaced the stand state and
+        // left them standing up carrying a gnome. The stand state belongs to
+        // creature_addon and nothing here should touch it.
+        me->SetAIAnimKitId(ANIM_KIT_CARRY);
 
         // The casualty is a database spawn rather than a summon, so it is already in the
         // world and only has to be seated.

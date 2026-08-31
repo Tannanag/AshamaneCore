@@ -823,10 +823,242 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum TargetAcquisitionDevice
+{
+    // The Crazed Leper Gnomes loose in the Train Depot. Not 46391, which is the entry
+    // the Operatives outside the camp spar with.
+    NPC_ABDUCTION_TARGET     = 46363,
+
+    // 85771 is a two second channel that reaches 30 yards; its periodic tick force-casts
+    // 85772, and 85772 is the SPELL_AURA_CONTROL_VEHICLE that puts the gnome in the seat.
+    SPELL_TAD_TRACTOR_BEAM   = 85771,
+    SPELL_RIDE_TAD           = 85772,
+
+    SEAT_ABDUCTED_GNOME      = 0,
+
+    POINT_TAD_TARGET         = 10
+};
+
+// The beam's own range. The sweep is wider because a device whose post has nothing
+// that close closes the distance instead of standing idle.
+static constexpr float TAD_BEAM_RANGE   = 30.0f;
+static constexpr float TAD_SEARCH_RANGE = 60.0f;
+
+// Wide enough to reach every other device in the depot, so two of them cannot settle on
+// the same gnome from opposite ends of the camp.
+static constexpr float TAD_PEER_RANGE   = 150.0f;
+
+// A device is out for a little under thirty-four seconds: about two and a half spent
+// choosing, two channelling, twenty-nine carrying, and it is back five seconds after it
+// goes.
+static constexpr Milliseconds TAD_ACQUIRE_DELAY = Milliseconds(2400);
+static constexpr Milliseconds TAD_BEAM_CHANNEL  = Milliseconds(2000);
+static constexpr Milliseconds TAD_RETRY_DELAY   = Milliseconds(1000);
+static constexpr Seconds      TAD_HOLD_TIME     = Seconds(29);
+static constexpr Seconds      TAD_RESPAWN_DELAY = Seconds(5);
+
+// Re-path only once the gnome has walked this far from where the approach was aimed,
+// so a wandering target does not restart the spline on every poll.
+static constexpr float TAD_REPATH_TOLERANCE = 5.0f;
+
+// The devices hanging over the Train Depot pick a Crazed Leper Gnome off the floor, hold
+// it up for half a minute and drop it. The interesting part is the choosing: a gnome
+// already in a seat, or already spoken for by a device still on its way over, has to be
+// invisible to every other device, or several of them converge on one gnome and the rest
+// of the floor is never touched.
+//
+// The claim lives on the AI that made it and is read back out through UnitAI::GetGUID
+// rather than kept in a registry beside the class. A device that despawns at the end of
+// its run, or leaves with its grid, or is dropped by a .reload, takes its claim with it;
+// a registry would need every one of those paths to remember to clean up, and the one
+// that forgot would lock a gnome out permanently.
+struct npc_target_acquisition_device : public ScriptedAI
+{
+    npc_target_acquisition_device(Creature* creature) : ScriptedAI(creature) { }
+
+    // What the other devices ask. Empty until this one has settled on a gnome.
+    ObjectGuid GetGUID(int32 /*id*/) const override { return _claimed; }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _claimed.Clear();
+        _approaching = false;
+
+        // The device is scenery with a job; a victim would put a ChaseMovementGenerator
+        // on MOTION_SLOT_ACTIVE and take the approach spline off it. AttackStart and
+        // MoveInLineOfSight below close the two routes REACT_PASSIVE leaves open.
+        me->SetReactState(REACT_PASSIVE);
+
+        _scheduler.Schedule(TAD_ACQUIRE_DELAY, [this](TaskContext task) { Acquire(task); });
+    }
+
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+
+private:
+    // Runs every second until a gnome is both chosen and inside beam range.
+    void Acquire(TaskContext task)
+    {
+        Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
+
+        // Dead, gone, or picked up by something else while this device was walking over.
+        if (gnome && (!gnome->IsAlive() || gnome->GetVehicle()))
+            gnome = nullptr;
+
+        if (!gnome)
+        {
+            _claimed.Clear();
+            _approaching = false;
+
+            gnome = FindGnome();
+            if (!gnome)
+            {
+                task.Repeat(TAD_RETRY_DELAY);
+                return;
+            }
+
+            // Claimed from here on: FindGnome on any other device will now skip it.
+            _claimed = gnome->GetGUID();
+        }
+
+        if (me->IsWithinDist(gnome, TAD_BEAM_RANGE))
+        {
+            me->GetMotionMaster()->MovementExpired();
+            Beam(gnome);
+            return;
+        }
+
+        if (!_approaching || gnome->GetDistance(_approachTo) > TAD_REPATH_TOLERANCE)
+        {
+            _approaching = true;
+            _approachTo = gnome->GetPosition();
+            me->GetMotionMaster()->MovePoint(POINT_TAD_TARGET, _approachTo, false);
+        }
+
+        task.Repeat(TAD_RETRY_DELAY);
+    }
+
+    void Beam(Creature* gnome)
+    {
+        me->SetFacingToObject(gnome);
+
+        // Triggered, because the beam is here for the look of the thing and a creature
+        // cast that CheckCast refuses is refused in total silence -- no message reaches
+        // anyone, and the device would hang in the air with no beam and no clue why. The
+        // device is faction 35 and the gnome 36, so target validity is a real way for
+        // that to happen. Spell::IsNeedSendToClient returns true on any non-zero
+        // SpellVisual, so a triggered cast still draws the beam.
+        me->CastSpell(gnome, SPELL_TAD_TRACTOR_BEAM, TRIGGERED_FULL_MASK);
+
+        _scheduler.Schedule(TAD_BEAM_CHANNEL, [this](TaskContext /*task*/)
+        {
+            Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
+            if (!gnome || !gnome->IsAlive() || gnome->GetVehicle())
+            {
+                // Lost it during the channel. Start again rather than hold an empty beam.
+                _claimed.Clear();
+                _approaching = false;
+                _scheduler.Schedule(TAD_RETRY_DELAY, [this](TaskContext task) { Acquire(task); });
+                return;
+            }
+
+            Board(gnome);
+            _scheduler.Schedule(TAD_HOLD_TIME, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
+        });
+    }
+
+    // TRIGGERED_FULL_MASK, and cast by the gnome rather than through Unit::EnterVehicle.
+    // EnterVehicle casts with only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set,
+    // which leaves the whole of Spell::CheckCast in the way; when it refuses it says
+    // nothing, applies no SPELL_AURA_CONTROL_VEHICLE and so never queues the
+    // VehicleJoinEvent, and the device hangs there with an empty seat.
+    //
+    // The tractor beam's periodic tick is supposed to force-cast this by itself. It is
+    // driven here as well because a force-cast that fails is just as quiet, and the whole
+    // run is built on the gnome actually being aboard.
+    bool Board(Creature* gnome)
+    {
+        return gnome->CastCustomSpell(SPELL_RIDE_TAD, SPELLVALUE_BASE_POINT0,
+            SEAT_ABDUCTED_GNOME + 1, me, TRIGGERED_FULL_MASK);
+    }
+
+    void ReleaseAndDespawn()
+    {
+        // Explicitly, before the despawn. Vehicle::Uninstall would clear the seat anyway,
+        // but going through RemoveAllPassengers is what runs the gnome's exit and leaves
+        // it standing on the floor rather than wherever the seat had it.
+        if (Vehicle* kit = me->GetVehicleKit())
+            kit->RemoveAllPassengers();
+
+        me->DespawnOrUnsummon(Milliseconds(0), TAD_RESPAWN_DELAY);
+    }
+
+    // Nearest gnome that is alive, out of a seat, and not already claimed.
+    Creature* FindGnome() const
+    {
+        std::list<Creature*> gnomes;
+        me->GetCreatureListWithEntryInGrid(gnomes, NPC_ABDUCTION_TARGET, TAD_SEARCH_RANGE);
+        if (gnomes.empty())
+            return nullptr;
+
+        std::list<Creature*> devices;
+        me->GetCreatureListWithEntryInGrid(devices, me->GetEntry(), TAD_PEER_RANGE);
+
+        Creature* best = nullptr;
+        float bestDist = 0.0f;
+
+        for (Creature* gnome : gnomes)
+        {
+            // GetVehicle covers a gnome already carried, whoever is carrying it.
+            if (!gnome->IsAlive() || gnome->GetVehicle())
+                continue;
+
+            if (IsClaimedElsewhere(devices, gnome->GetGUID()))
+                continue;
+
+            float const dist = me->GetDistance(gnome);
+            if (!best || dist < bestDist)
+            {
+                best = gnome;
+                bestDist = dist;
+            }
+        }
+
+        return best;
+    }
+
+    bool IsClaimedElsewhere(std::list<Creature*> const& devices, ObjectGuid gnome) const
+    {
+        for (Creature* device : devices)
+        {
+            if (device == me || !device->IsAIEnabled)
+                continue;
+
+            if (device->AI()->GetGUID() == gnome)
+                return true;
+        }
+
+        return false;
+    }
+
+    TaskScheduler _scheduler;
+    ObjectGuid _claimed;
+    Position _approachTo;
+    bool _approaching = false;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
     RegisterCreatureAI(npc_safe_operative_barker);
     RegisterCreatureAI(npc_safe_operative_carrier);
     RegisterCreatureAI(npc_safe_operative_medic);
+    RegisterCreatureAI(npc_target_acquisition_device);
 }

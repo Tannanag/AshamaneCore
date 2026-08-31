@@ -883,6 +883,9 @@ static constexpr Seconds SQUAD_SHOT_MIN = Seconds(2);
 static constexpr Seconds SQUAD_SHOT_MAX = Seconds(3);
 static constexpr float SQUAD_ALERT_RANGE = 25.0f;
 
+// Volleys after which a gnome that is still standing means the shot is not landing.
+static constexpr uint32 SQUAD_SHOTS_BEFORE_DOUBT = 8;
+
 // The beam's own range. The sweep is wider because a device whose post has nothing
 // that close closes the distance instead of standing idle.
 static constexpr float TAD_BEAM_RANGE   = 30.0f;
@@ -940,9 +943,6 @@ struct npc_target_acquisition_device : public ScriptedAI
                 if (std::hypot(data->posX - post.PostX, data->posY - post.PostY) <= TAD_POST_MATCH)
                 {
                     _carry = &post;
-                    // TEMPORARY, while the hand-off is being proven end to end.
-                    TC_LOG_ERROR("scripts.ai", "TADTRACE: spawn " UI64FMTD " at (%.2f,%.2f) is a carrier, drop (%.2f,%.2f)",
-                        uint64(me->GetSpawnId()), data->posX, data->posY, post.DropX, post.DropY);
                     break;
                 }
         }
@@ -1227,6 +1227,7 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
         _scheduler.CancelAll();
         _mark.Clear();
         _warned = false;
+        _shots = 0;
         me->SetReactState(REACT_PASSIVE);
     }
 
@@ -1239,12 +1240,9 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
         if (id != DATA_FIRING_SQUAD_TARGET)
             return;
 
-        // TEMPORARY, while the hand-off is being proven end to end.
-        TC_LOG_ERROR("scripts.ai", "TADTRACE: squad spawn " UI64FMTD " handed %s",
-            uint64(me->GetSpawnId()), guid.ToString().c_str());
-
         _mark = guid;
         _warned = false;
+        _shots = 0;
         _scheduler.CancelAll();
 
         // Staggered, so four rifles on the same line do not fire as one.
@@ -1261,14 +1259,19 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
             {
                 me->SetFacingToObject(gnome);
 
-                // Not triggered, and the result is checked. The sparring Operatives fire
-                // this same spell, but they fire it at 46391, which is faction 14 and
-                // hostile to everything; these squads are handed 46363, which is faction
-                // 36, so target validity is genuinely untested here. A refused creature
-                // cast is silent, and at this server's log level TC_LOG_DEBUG writes
-                // nothing at all -- hence LOG_ERROR, once per gnome rather than every
-                // two seconds.
-                if (me->CastSpell(gnome, SPELL_SHOOT, false))
+                // Triggered, and this is the one place in this scene where that is the
+                // right answer rather than a way of dodging a problem.
+                //
+                // The sparring Operatives fire this same spell plainly, but they fire it
+                // at 46391, which is faction 14 and hostile to everything. These squads
+                // are handed 46363, faction 36, and Spell::CheckCast refuses the cast on
+                // target validity every time -- the gnome is not their enemy, it is their
+                // prisoner. Nothing about the scene wants it to be an enemy either: it is
+                // carried in unable to act and shot where it is put down, and making it
+                // hostile would have all forty of them turn on the camp and on players.
+                //
+                // So the execution is not routed through hostility at all.
+                if (me->CastSpell(gnome, SPELL_SHOOT, TRIGGERED_FULL_MASK))
                 {
                     me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
                     me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
@@ -1276,10 +1279,21 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
                 else if (!_warned)
                 {
                     _warned = true;
-                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s refused %u at %s, dist %.1f",
+                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s refused %u at %s, dist %.1f, valid=%u hostile=%u",
                         me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
-                        gnome->GetGUID().ToString().c_str(), me->GetExactDist(gnome));
+                        gnome->GetGUID().ToString().c_str(), me->GetExactDist(gnome),
+                        uint32(me->IsValidAttackTarget(gnome)), uint32(me->IsHostileTo(gnome)));
                 }
+
+                // A triggered cast reports success whether or not the effect found a
+                // target, so the shot is not proof the gnome is being hit. If it is still
+                // standing well past the volleys that should have finished it, say so
+                // once rather than let the squad mime at it forever.
+                if (++_shots == SQUAD_SHOTS_BEFORE_DOUBT)
+                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s has fired %u times at %s and it is still up (%.0f%% hp), valid=%u hostile=%u",
+                        me->GetGUID().ToString().c_str(), uint32(_shots),
+                        gnome->GetGUID().ToString().c_str(), gnome->GetHealthPct(),
+                        uint32(me->IsValidAttackTarget(gnome)), uint32(me->IsHostileTo(gnome)));
             }
 
             task.Repeat(SQUAD_SHOT_MIN, SQUAD_SHOT_MAX);
@@ -1295,6 +1309,7 @@ private:
     TaskScheduler _scheduler;
     ObjectGuid _mark;
     bool _warned = false;
+    uint32 _shots = 0;
 };
 
 void AddSC_dun_morogh_area_new_tinkertown()

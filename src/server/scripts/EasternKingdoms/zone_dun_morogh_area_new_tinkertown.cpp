@@ -725,13 +725,7 @@ enum SafeOperativeMedic
     // A group each, not one group of two. Neither Operative rotates its line -- each
     // said the same one every time it spoke, three times apiece, which is not chance.
     SAY_MEDIC_UPPER     = 0,
-    SAY_MEDIC_LOWER     = 1,
-
-    // The pose for an Operative tending a casualty on the ground. Six Operatives in the
-    // camp hold this one permanently -- it is re-sent to each of them a hundred times
-    // and more over a single visit, never cleared -- and one of them is the third voice
-    // saying these same lines. AnimKit 573 exists in the 7.3.5 client.
-    ANIM_KIT_TEND       = 573
+    SAY_MEDIC_LOWER     = 1
 };
 
 // Between one Operative's repeats the gap was 85 seconds and then 161, and for the other
@@ -755,12 +749,13 @@ struct npc_safe_operative_medic : public npc_safe_operative_bearer
         me->SetReactState(REACT_PASSIVE);
         ClearSpellClick();
 
-        // ANIM_KIT_TEND, not ANIM_KIT_CARRY, and no emote state. The first attempt set
-        // the carry kit and EMOTE_STATE_KNEEL together and the Operatives stood up
-        // straight: the anim kit wins, and 989 is the standing carry pose, so the emote
-        // never got a say. 573 is the kit the Operatives that do this job hold instead,
-        // and they hold it permanently rather than being sent it once.
-        me->SetAIAnimKitId(ANIM_KIT_TEND);
+        // No anim kit, and no emote state. The kneel was never missing: both spawns
+        // carry StandState 8, UNIT_STAND_STATE_KNEEL, in creature_addon, and
+        // LoadCreaturesAddon applies it before the creature reaches the map. Every pose
+        // this script set was outranking it -- 989 stood them up in the carry pose, 573
+        // put them in a combat stance -- so the fix is to set none and leave the
+        // database's kneel alone. The gnome is in the arms because of the vehicle seat,
+        // which is independent of all of this.
 
         // The casualty is a database spawn rather than a summon, so it is already in the
         // world and only has to be seated.

@@ -725,7 +725,11 @@ enum SafeOperativeMedic
     // A group each, not one group of two. Neither Operative rotates its line -- each
     // said the same one every time it spoke, three times apiece, which is not chance.
     SAY_MEDIC_UPPER     = 0,
-    SAY_MEDIC_LOWER     = 1
+    SAY_MEDIC_LOWER     = 1,
+
+    // Kneel and carry in one kit: the only one in the client playing both AnimID 75 and
+    // AnimID 79. See the comment in Reset for why it is a kit and not a stand state.
+    ANIM_KIT_KNEELING_CARRY = 7264
 };
 
 // Between one Operative's repeats the gap was 85 seconds and then 161, and for the other
@@ -749,13 +753,17 @@ struct npc_safe_operative_medic : public npc_safe_operative_bearer
         me->SetReactState(REACT_PASSIVE);
         ClearSpellClick();
 
-        // No anim kit, and no emote state. The kneel was never missing: both spawns
-        // carry StandState 8, UNIT_STAND_STATE_KNEEL, in creature_addon, and
-        // LoadCreaturesAddon applies it before the creature reaches the map. Every pose
-        // this script set was outranking it -- 989 stood them up in the carry pose, 573
-        // put them in a combat stance -- so the fix is to set none and leave the
-        // database's kneel alone. The gnome is in the arms because of the vehicle seat,
-        // which is independent of all of this.
+        // Kneeling with the arms still out, which is one animation and not two: 7264 is
+        // the only kit in the client whose segments play both 75, the kneel that
+        // EMOTE_ONESHOT_KNEEL triggers, and 79, the carry that kit 989 plays. That
+        // pairing is exactly what the carrier looks like in the moment it kneels to set
+        // its gnome down, which is the look this scene wants held permanently.
+        //
+        // It has to be an anim kit rather than the StandState 8 the addon already
+        // carries, because an anim kit outranks the stand state anyway -- so the kneel
+        // has to come from the kit or it is lost. The gnome is in the arms because of
+        // the vehicle seat and is unaffected by any of this.
+        me->SetAIAnimKitId(ANIM_KIT_KNEELING_CARRY);
 
         // The casualty is a database spawn rather than a summon, so it is already in the
         // world and only has to be seated.

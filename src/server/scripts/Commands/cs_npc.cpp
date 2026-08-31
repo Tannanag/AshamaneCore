@@ -939,16 +939,25 @@ public:
     }
 
     //set model of creature
-    // Sets a creature's AI anim kit live, for finding the right pose without a rebuild
-    // per attempt. Not saved: the kit belongs in creature_addon.aiAnimKit or in a script
-    // once the right one is known. 0 clears it and hands the creature back to its
-    // StandState and emote state, which an anim kit otherwise outranks.
+    // Sets one of a creature's three anim kit slots live, for finding a pose without a
+    // rebuild per attempt. Not saved: once the right kit is known it belongs in
+    // creature_addon (aiAnimKit / movementAnimKit / meleeAnimKit) or in a script.
+    //
+    // .npc set animkit <id> [ai|move|melee]   -- ai is the default slot
+    //
+    // The slot matters. An AI anim kit outranks StandState and UNIT_NPC_EMOTESTATE
+    // outright, so a pose set there discards whatever creature_addon asked for; the
+    // other two slots are what make combinations possible. 0 clears a slot.
     static bool HandleNpcSetAnimKitCommand(ChatHandler* handler, char const* args)
     {
         if (!*args)
             return false;
 
-        uint32 animKit = atoul(args);
+        char* kitStr = strtok((char*)args, " ");
+        if (!kitStr)
+            return false;
+
+        char* slotStr = strtok(nullptr, " ");
 
         Creature* creature = handler->getSelectedCreature();
         if (!creature)
@@ -958,6 +967,7 @@ public:
             return false;
         }
 
+        uint32 animKit = atoul(kitStr);
         if (animKit > std::numeric_limits<uint16>::max())
         {
             handler->PSendSysMessage("Anim kit %u is out of range.", animKit);
@@ -972,8 +982,22 @@ public:
             return false;
         }
 
-        creature->SetAIAnimKitId(uint16(animKit));
-        handler->PSendSysMessage("AI anim kit of %s set to %u (not saved).", creature->GetName().c_str(), animKit);
+        std::string slot = slotStr ? slotStr : "ai";
+        if (slot == "ai")
+            creature->SetAIAnimKitId(uint16(animKit));
+        else if (slot == "move" || slot == "movement")
+            creature->SetMovementAnimKitId(uint16(animKit));
+        else if (slot == "melee")
+            creature->SetMeleeAnimKitId(uint16(animKit));
+        else
+        {
+            handler->SendSysMessage("Slot must be ai, move or melee.");
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        handler->PSendSysMessage("%s anim kit of %s set to %u (not saved).",
+            slot.c_str(), creature->GetName().c_str(), animKit);
         return true;
     }
 

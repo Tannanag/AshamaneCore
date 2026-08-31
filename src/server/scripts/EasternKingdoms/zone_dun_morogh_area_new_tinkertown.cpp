@@ -966,6 +966,28 @@ private:
             TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s could not beam %s",
                 me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str());
 
+        // A channel draws its beam between the caster and whatever is listed in
+        // UNIT_DYNAMIC_FIELD_CHANNEL_OBJECTS. Spell::SendChannelStart fills that list from
+        // m_UniqueTargetInfo (Spell.cpp:4683) -- from the spell's own effect targeting,
+        // not from the unit the cast was aimed at. An effect whose implicit target does
+        // not resolve to the gnome leaves the list empty, and a channel with no object has
+        // no far end: the visual plays, and it plays entirely on the device.
+        //
+        // So the far end is named here rather than assumed. Writing the slot directly is
+        // how this core already does it for the fishing bobber, SpellEffects.cpp:4944.
+        ObjectGuid const gnomeGuid = gnome->GetGUID();
+        bool connected = false;
+        for (ObjectGuid const& channelled : me->GetChannelObjects())
+            if (channelled == gnomeGuid)
+                connected = true;
+
+        if (!connected)
+        {
+            TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s beamed %s but the channel named nothing; connecting it",
+                me->GetGUID().ToString().c_str(), gnomeGuid.ToString().c_str());
+            me->SetDynamicStructuredValue(UNIT_DYNAMIC_FIELD_CHANNEL_OBJECTS, 0, &gnomeGuid);
+        }
+
         _scheduler.Schedule(TAD_BEAM_CHANNEL, [this](TaskContext /*task*/)
         {
             Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);

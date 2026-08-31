@@ -377,6 +377,19 @@ Position const CarryPathBack[] =
     { -4965.455f, 832.328f, 281.593f }
 };
 
+// A vehicle with a free seat advertises itself as clickable. Vehicle::Install sets
+// UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and Vehicle::RemovePassenger sets it
+// again the moment one empties; VehicleJoinEvent only takes it off when the last usable
+// seat fills. So a carrier wears it from the moment it lets go until the next passenger
+// boards -- the client draws the cog cursor and offers an interaction that does not
+// exist. Neither 46449 nor 46012 has any npc_spellclick_spells row, so a click was never
+// going to do anything.
+static void ClearVehicleSpellClick(Creature* vehicle)
+{
+    if (vehicle->HasFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
+        vehicle->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+}
+
 // The S.A.F.E. Operative on the ledge above the camp, creature guid 169286. It carries
 // an Injured Gnome down to the bed at the bottom, kneels and sets it down, walks back
 // up and despawns; the respawn timer brings a new one and the run starts over.
@@ -483,21 +496,12 @@ protected:
         gnome->UpdateObjectVisibility();
     }
 
-    // A vehicle with a free seat advertises itself as clickable. Vehicle::Install sets
-    // UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and Vehicle::RemovePassenger sets
-    // it again the moment one empties; VehicleJoinEvent only takes it off when the last
-    // usable seat fills. So the Operative wears it from the hand-off at the bed until
-    // the next gnome boards, which is the whole walk home -- the client draws the cog
-    // cursor and offers an interaction that does not exist. 46449 has no
-    // npc_spellclick_spells rows at all, so a click was never going to do anything.
-    //
     // Cleared from three places rather than polled: Reset, the walk-out task (which
     // covers Vehicle::Install, since Creature::AddToWorld runs it after AIM_Initialize
     // and therefore after Reset), and PassengerBoarded on the way out.
     void ClearSpellClick()
     {
-        if (me->HasFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK))
-            me->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        ClearVehicleSpellClick(me);
     }
 
     // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
@@ -839,6 +843,22 @@ enum TargetAcquisitionDevice
     NPC_SAFE_OPERATIVE_LINE  = 45847,
     NPC_SAFE_OFFICER_LINE    = 46025,
 
+    // The Officer's own shot, and what 46025 carries as creature_template.spell1. It is
+    // the shot its equipment is for: creature_equip_template gives 46025 item 61392, an
+    // off-hand pistol, and leaves its ranged slot empty, so the rifle shot the Operatives
+    // fire was never the Officer's to make.
+    //
+    // 85687 brings its own SpellVisual, 18125, which is the pistol's, so unlike
+    // SPELL_SHOOT it is cast and left alone -- no kit is replayed on top of it. 18125's
+    // fire kit, 17077, does carry a SpellVisualKitModelAttach, at AttachmentID 21 rather
+    // than the 34 that put a foreign rifle on the Operatives; if the Officer's pistol
+    // does turn out to change for the shot, that attach is where to look.
+    //
+    // RangeIndex 54, five to thirty yards, and the five is a real minimum. The two
+    // Officers stand 8.3 and 9.3 yards from their drop points, so there is room, but a
+    // drop that ended much closer would start coming back refused.
+    SPELL_OFFICER_SHOOT      = 85687,
+
     SEAT_ABDUCTED_GNOME      = 0,
 
     POINT_TAD_TARGET         = 10,
@@ -1054,6 +1074,8 @@ struct npc_target_acquisition_device : public ScriptedAI
         // MoveInLineOfSight below close the two routes REACT_PASSIVE leaves open.
         me->SetReactState(REACT_PASSIVE);
 
+        ClearVehicleSpellClick(me);
+
         _scheduler.Schedule(TAD_ACQUIRE_DELAY, [this](TaskContext task) { Acquire(task); });
     }
 
@@ -1077,6 +1099,13 @@ struct npc_target_acquisition_device : public ScriptedAI
         }
 
         ReleaseGnome(gnome);
+
+        // Vehicle::RemovePassenger puts UNIT_NPC_FLAG_SPELLCLICK back on as its very first
+        // act and this hook is its last, so here is where it comes off again. Without it
+        // the device wears the cog for everything after the gnome goes -- the pause over
+        // the body, the flight home, and every second of the run for a device that let a
+        // live one go.
+        ClearVehicleSpellClick(me);
 
         // A gnome that leaves the seat alive falls on its own: Unit::_ExitVehicle reads
         // the ground under the device and launches the drop itself, and nothing disturbs
@@ -1190,6 +1219,11 @@ private:
     // Runs every second until a gnome is both chosen and inside beam range.
     void Acquire(TaskContext task)
     {
+        // Vehicle::Install runs after Reset -- Creature::AddToWorld calls it after
+        // AIM_Initialize -- so the cog it puts on has to come off again once it has, and
+        // this is the first thing to run afterwards.
+        ClearVehicleSpellClick(me);
+
         Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
 
         // Dead, gone, or picked up by something else while this device was walking over.
@@ -1515,22 +1549,29 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
             {
                 me->SetFacingToObject(gnome);
 
+                uint32 const shot = ShotSpell();
+
                 // Cast plainly. The device hands the gnome over wearing a faction that
                 // makes it a legal target, so there is nothing here for CheckCast to
                 // refuse, and a refusal that does happen is worth hearing about rather
                 // than papering over -- a triggered cast would report success while the
                 // effect quietly reached nothing at all, which is exactly how this went
                 // unnoticed the first time.
-                if (me->CastSpell(gnome, SPELL_SHOOT, false))
+                if (me->CastSpell(gnome, shot, false))
                 {
-                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
-                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                    // Only the Operatives' substitute needs its look replayed by hand.
+                    // The Officer casts its own spell, so its own visual plays with it.
+                    if (shot == SPELL_SHOOT)
+                    {
+                        me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
+                        me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                    }
                 }
                 else if (!_warned)
                 {
                     _warned = true;
                     TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s refused %u at %s, dist %.1f, valid=%u hostile=%u",
-                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
+                        me->GetGUID().ToString().c_str(), shot,
                         gnome->GetGUID().ToString().c_str(), me->GetExactDist(gnome),
                         uint32(me->IsValidAttackTarget(gnome)), uint32(me->IsHostileTo(gnome)));
                 }
@@ -1557,6 +1598,14 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
     }
 
 private:
+    // The Officer and the Operatives on a line are not carrying the same weapon, so they
+    // do not fire the same shot. Read off the entry rather than stored, because a line is
+    // built from whichever spawns stand near the drop and either entry can be on it.
+    uint32 ShotSpell() const
+    {
+        return me->GetEntry() == NPC_SAFE_OFFICER_LINE ? uint32(SPELL_OFFICER_SHOOT) : uint32(SPELL_SHOOT);
+    }
+
     // The device owns the condemned state and undoes it when the gnome leaves the seat,
     // which covers the kill -- Unit::setDeathState unseats the body itself. This is the
     // backstop for the marks that never get that far: a gnome that left with its grid, a
@@ -1569,9 +1618,17 @@ private:
     void ReleaseMark()
     {
         if (me->IsInWorld() && !_mark.IsEmpty())
+        {
             if (Creature* gnome = ObjectAccessor::GetCreature(*me, _mark))
                 if (!gnome->GetVehicle())
                     ReleaseGnome(gnome);
+
+            // Every shot turns the Operative to face the gnome, and nothing turns it back
+            // -- so a line that has executed once stands angled at the drop point for the
+            // rest of the uptime instead of along its own front. The spawn orientation is
+            // the line's facing, so it is put back with the mark.
+            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+        }
 
         _mark.Clear();
         _warned = false;

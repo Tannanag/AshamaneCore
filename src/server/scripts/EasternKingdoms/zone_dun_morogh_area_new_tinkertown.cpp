@@ -725,7 +725,13 @@ enum SafeOperativeMedic
     // A group each, not one group of two. Neither Operative rotates its line -- each
     // said the same one every time it spoke, three times apiece, which is not chance.
     SAY_MEDIC_UPPER     = 0,
-    SAY_MEDIC_LOWER     = 1
+    SAY_MEDIC_LOWER     = 1,
+
+    // The pose for an Operative tending a casualty on the ground. Six Operatives in the
+    // camp hold this one permanently -- it is re-sent to each of them a hundred times
+    // and more over a single visit, never cleared -- and one of them is the third voice
+    // saying these same lines. AnimKit 573 exists in the 7.3.5 client.
+    ANIM_KIT_TEND       = 573
 };
 
 // Between one Operative's repeats the gap was 85 seconds and then 161, and for the other
@@ -735,13 +741,9 @@ static constexpr Seconds MEDIC_BARK_MIN = Seconds(70);
 static constexpr Seconds MEDIC_BARK_MAX = Seconds(90);
 
 // Two Operatives down in the camp, each kneeling over an Injured Gnome it is holding and
-// talking to. The holding is the same vehicle seat the carrier uses; the difference is
-// that these two never stand up and never go anywhere.
-//
-// EMOTE_STATE_KNEEL and ANIM_KIT_CARRY are both set, which is the one part of this that
-// is a guess rather than a reading: the anim kit is the standing carry pose. If the two
-// fight each other in game, dropping either one is a one-line change -- the gnome stays
-// in the arms regardless, because that is the vehicle seat and not the animation.
+// talking to. The holding is the same vehicle seat the carrier uses -- the gnome sits in
+// the arms because of the seat, not because of the animation -- and the difference from
+// the carrier is that these two never set the gnome down and never go anywhere.
 struct npc_safe_operative_medic : public npc_safe_operative_bearer
 {
     npc_safe_operative_medic(Creature* creature) : npc_safe_operative_bearer(creature) { }
@@ -753,8 +755,12 @@ struct npc_safe_operative_medic : public npc_safe_operative_bearer
         me->SetReactState(REACT_PASSIVE);
         ClearSpellClick();
 
-        me->SetAIAnimKitId(ANIM_KIT_CARRY);
-        me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_KNEEL);
+        // ANIM_KIT_TEND, not ANIM_KIT_CARRY, and no emote state. The first attempt set
+        // the carry kit and EMOTE_STATE_KNEEL together and the Operatives stood up
+        // straight: the anim kit wins, and 989 is the standing carry pose, so the emote
+        // never got a say. 573 is the kit the Operatives that do this job hold instead,
+        // and they hold it permanently rather than being sent it once.
+        me->SetAIAnimKitId(ANIM_KIT_TEND);
 
         // The casualty is a database spawn rather than a summon, so it is already in the
         // world and only has to be seated.

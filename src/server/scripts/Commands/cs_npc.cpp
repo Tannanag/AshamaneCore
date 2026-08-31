@@ -27,9 +27,11 @@ EndScriptData */
 #include "CreatureAI.h"
 #include "CreatureGroups.h"
 #include "DatabaseEnv.h"
+#include "DB2Stores.h"
 #include "Language.h"
 #include "Log.h"
 #include "Map.h"
+#include <limits>
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
@@ -235,6 +237,7 @@ public:
         static std::vector<ChatCommand> npcSetCommandTable =
         {
             { "allowmove",      rbac::RBAC_PERM_COMMAND_NPC_SET_ALLOWMOVE, false, &HandleNpcSetAllowMovementCommand, "" },
+            { "animkit",        rbac::RBAC_PERM_COMMAND_NPC_SET,           false, &HandleNpcSetAnimKitCommand,       "" },
             { "entry",          rbac::RBAC_PERM_COMMAND_NPC_SET_ENTRY,     false, &HandleNpcSetEntryCommand,         "" },
             { "factionid",      rbac::RBAC_PERM_COMMAND_NPC_SET_FACTIONID, false, &HandleNpcSetFactionIdCommand,     "" },
             { "flag",           rbac::RBAC_PERM_COMMAND_NPC_SET_FLAG,      false, &HandleNpcSetFlagCommand,          "" },
@@ -936,6 +939,44 @@ public:
     }
 
     //set model of creature
+    // Sets a creature's AI anim kit live, for finding the right pose without a rebuild
+    // per attempt. Not saved: the kit belongs in creature_addon.aiAnimKit or in a script
+    // once the right one is known. 0 clears it and hands the creature back to its
+    // StandState and emote state, which an anim kit otherwise outranks.
+    static bool HandleNpcSetAnimKitCommand(ChatHandler* handler, char const* args)
+    {
+        if (!*args)
+            return false;
+
+        uint32 animKit = atoul(args);
+
+        Creature* creature = handler->getSelectedCreature();
+        if (!creature)
+        {
+            handler->SendSysMessage(LANG_SELECT_CREATURE);
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (animKit > std::numeric_limits<uint16>::max())
+        {
+            handler->PSendSysMessage("Anim kit %u is out of range.", animKit);
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        if (animKit && !sAnimKitStore.LookupEntry(animKit))
+        {
+            handler->PSendSysMessage("Anim kit %u does not exist in AnimKit.db2.", animKit);
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        creature->SetAIAnimKitId(uint16(animKit));
+        handler->PSendSysMessage("AI anim kit of %s set to %u (not saved).", creature->GetName().c_str(), animKit);
+        return true;
+    }
+
     static bool HandleNpcSetModelCommand(ChatHandler* handler, char const* args)
     {
         if (!*args)

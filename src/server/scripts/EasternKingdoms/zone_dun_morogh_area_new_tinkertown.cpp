@@ -930,13 +930,25 @@ struct npc_target_acquisition_device : public ScriptedAI
         _approaching = false;
         _carry = nullptr;
 
-        Position const home = me->GetHomePosition();
-        for (TadPost const& post : TadCarryPosts)
-            if (std::hypot(home.GetPositionX() - post.PostX, home.GetPositionY() - post.PostY) <= TAD_POST_MATCH)
-            {
-                _carry = &post;
-                break;
-            }
+        // From the spawn row, not from GetHomePosition. Creature::LoadCreatureFromDB calls
+        // Create() -- which reaches AIM_Initialize and therefore this Reset -- a few lines
+        // before it calls SetHomePosition (Creature.cpp:1528 and :1532), so the home
+        // position is not dependable this early. The spawn data is.
+        if (CreatureData const* data = me->GetCreatureData())
+        {
+            for (TadPost const& post : TadCarryPosts)
+                if (std::hypot(data->posX - post.PostX, data->posY - post.PostY) <= TAD_POST_MATCH)
+                {
+                    _carry = &post;
+                    // TEMPORARY, while the hand-off is being proven end to end.
+                    TC_LOG_ERROR("scripts.ai", "TADTRACE: spawn " UI64FMTD " at (%.2f,%.2f) is a carrier, drop (%.2f,%.2f)",
+                        uint64(me->GetSpawnId()), data->posX, data->posY, post.DropX, post.DropY);
+                    break;
+                }
+        }
+        else
+            TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s has no spawn data, cannot tell whether it carries",
+                me->GetGUID().ToString().c_str());
 
         // The device is scenery with a job; a victim would put a ChaseMovementGenerator
         // on MOTION_SLOT_ACTIVE and take the approach spline off it. AttackStart and
@@ -1101,8 +1113,13 @@ private:
         // shoot the moment it is on the floor. SetGUID does nothing on an AI that has not
         // asked for it, so the sparring Operatives nearby are untouched by this.
         if (_carry)
+        {
             if (Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed))
                 AlertSquad(gnome);
+            else
+                TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s reached its drop with no gnome to hand over",
+                    me->GetGUID().ToString().c_str());
+        }
 
         // Explicitly, before the despawn. Vehicle::Uninstall would clear the seat anyway,
         // but going through RemoveAllPassengers is what runs the gnome's exit and leaves
@@ -1119,9 +1136,17 @@ private:
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OPERATIVE_LINE, SQUAD_ALERT_RANGE);
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OFFICER_LINE, SQUAD_ALERT_RANGE);
 
+        uint32 told = 0;
         for (Creature* shooter : line)
             if (shooter->IsAIEnabled && shooter->IsAlive())
+            {
                 shooter->AI()->SetGUID(gnome->GetGUID(), DATA_FIRING_SQUAD_TARGET);
+                ++told;
+            }
+
+        if (!told)
+            TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s dropped %s with no squad within %.0f yd",
+                me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str(), SQUAD_ALERT_RANGE);
     }
 
     // Nearest gnome that is alive, out of a seat, and not already claimed.
@@ -1213,6 +1238,10 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
     {
         if (id != DATA_FIRING_SQUAD_TARGET)
             return;
+
+        // TEMPORARY, while the hand-off is being proven end to end.
+        TC_LOG_ERROR("scripts.ai", "TADTRACE: squad spawn " UI64FMTD " handed %s",
+            uint64(me->GetSpawnId()), guid.ToString().c_str());
 
         _mark = guid;
         _warned = false;

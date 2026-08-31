@@ -886,6 +886,19 @@ static constexpr float SQUAD_ALERT_RANGE = 25.0f;
 // Volleys after which a gnome that is still standing means the shot is not landing.
 static constexpr uint32 SQUAD_SHOTS_BEFORE_DOUBT = 8;
 
+// The faction the gnome wears while it is being executed.
+//
+// 46363 is faction 36 and is nobody's enemy, so Spell::CheckCast refuses every shot at
+// it on target validity, and a triggered cast does not help: the implicit target
+// selection drops a unit that is not a valid attack target, so the cast goes out and the
+// effect reaches nothing. The gnome has to actually be shootable.
+//
+// 14 is not an arbitrary pick -- it is what 46391, the game's own hostile Crazed Leper
+// Gnome, already wears. This is set on the single gnome being executed rather than on
+// creature_template, so the other forty stay as they are and no player walking through
+// the depot is set upon.
+static constexpr uint32 FACTION_CONDEMNED_GNOME = 14;
+
 // The beam's own range. The sweep is wider because a device whose post has nothing
 // that close closes the distance instead of standing idle.
 static constexpr float TAD_BEAM_RANGE   = 30.0f;
@@ -1136,6 +1149,10 @@ private:
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OPERATIVE_LINE, SQUAD_ALERT_RANGE);
         me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OFFICER_LINE, SQUAD_ALERT_RANGE);
 
+        // Before the squad is told, so the first volley already has something it is
+        // allowed to hit.
+        gnome->setFaction(FACTION_CONDEMNED_GNOME);
+
         uint32 told = 0;
         for (Creature* shooter : line)
             if (shooter->IsAIEnabled && shooter->IsAlive())
@@ -1225,9 +1242,7 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
     void Reset() override
     {
         _scheduler.CancelAll();
-        _mark.Clear();
-        _warned = false;
-        _shots = 0;
+        ReleaseMark();
         me->SetReactState(REACT_PASSIVE);
     }
 
@@ -1251,7 +1266,7 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
             Creature* gnome = ObjectAccessor::GetCreature(*me, _mark);
             if (!gnome || !gnome->IsAlive())
             {
-                _mark.Clear();
+                ReleaseMark();
                 return;
             }
 
@@ -1259,19 +1274,13 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
             {
                 me->SetFacingToObject(gnome);
 
-                // Triggered, and this is the one place in this scene where that is the
-                // right answer rather than a way of dodging a problem.
-                //
-                // The sparring Operatives fire this same spell plainly, but they fire it
-                // at 46391, which is faction 14 and hostile to everything. These squads
-                // are handed 46363, faction 36, and Spell::CheckCast refuses the cast on
-                // target validity every time -- the gnome is not their enemy, it is their
-                // prisoner. Nothing about the scene wants it to be an enemy either: it is
-                // carried in unable to act and shot where it is put down, and making it
-                // hostile would have all forty of them turn on the camp and on players.
-                //
-                // So the execution is not routed through hostility at all.
-                if (me->CastSpell(gnome, SPELL_SHOOT, TRIGGERED_FULL_MASK))
+                // Cast plainly. The device hands the gnome over wearing a faction that
+                // makes it a legal target, so there is nothing here for CheckCast to
+                // refuse, and a refusal that does happen is worth hearing about rather
+                // than papering over -- a triggered cast would report success while the
+                // effect quietly reached nothing at all, which is exactly how this went
+                // unnoticed the first time.
+                if (me->CastSpell(gnome, SPELL_SHOOT, false))
                 {
                     me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
                     me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
@@ -1306,6 +1315,23 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
     }
 
 private:
+    // The condemned faction has to come off again, and respawning will not do it:
+    // Creature::Respawn only restores the template faction through UpdateEntry, and it
+    // calls that only when the entry changed (Creature.cpp:1914), which it never
+    // does here. A gnome left wearing 14 would come back hostile to the whole camp and
+    // to any player walking past, so every path that lets go of the mark comes through
+    // here -- the kill, a gnome that wandered off, a reload.
+    void ReleaseMark()
+    {
+        if (me->IsInWorld() && !_mark.IsEmpty())
+            if (Creature* gnome = ObjectAccessor::GetCreature(*me, _mark))
+                gnome->RestoreFaction();
+
+        _mark.Clear();
+        _warned = false;
+        _shots = 0;
+    }
+
     TaskScheduler _scheduler;
     ObjectGuid _mark;
     bool _warned = false;

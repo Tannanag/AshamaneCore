@@ -961,6 +961,9 @@ static constexpr Milliseconds TAD_LINGER_AFTER_KILL = Milliseconds(5000);
 // so a device cannot hang over the depot for ever with nothing left to do.
 static constexpr Milliseconds TAD_RETURN_BACKSTOP = Milliseconds(15000);
 
+// Acquire runs once a second, so this is half a minute of a device finding nothing.
+static constexpr uint32 TAD_EMPTY_TRIES_BEFORE_DOUBT = 30;
+
 // Re-path only once the gnome has walked this far from where the approach was aimed,
 // so a wandering target does not restart the spline on every poll.
 static constexpr float TAD_REPATH_TOLERANCE = 5.0f;
@@ -1074,6 +1077,8 @@ struct npc_target_acquisition_device : public ScriptedAI
 
         _claimed.Clear();
         _falling.Clear();
+        _blind = 0;
+        _emptyTries = 0;
         _approaching = false;
         _executing = false;
         _leaving = false;
@@ -1266,9 +1271,19 @@ private:
             gnome = FindGnome();
             if (!gnome)
             {
+                // Said once. A device that has spent this long finding nothing is either
+                // over an empty floor, which is ordinary, or is looking at gnomes it
+                // cannot see, which means its post has no clear view of them and the
+                // sight test is what is keeping it idle.
+                if (++_emptyTries == TAD_EMPTY_TRIES_BEFORE_DOUBT && _blind)
+                    TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s has found nothing for %u tries; %u candidate(s) rejected on sight",
+                        me->GetGUID().ToString().c_str(), _emptyTries, _blind);
+
                 task.Repeat(TAD_RETRY_DELAY);
                 return;
             }
+
+            _emptyTries = 0;
 
             // Claimed from here on: FindGnome on any other device will now skip it.
             _claimed = gnome->GetGUID();
@@ -1276,6 +1291,17 @@ private:
 
         if (me->IsWithinDist(gnome, TAD_BEAM_RANGE))
         {
+            // In range but no longer in sight -- it wandered behind something between
+            // being chosen and being reached. Give the claim up rather than beam through
+            // it; FindGnome will not offer it again until it comes back into the open.
+            if (!InBeamSight(gnome))
+            {
+                _claimed.Clear();
+                _approaching = false;
+                task.Repeat(TAD_RETRY_DELAY);
+                return;
+            }
+
             me->GetMotionMaster()->MovementExpired();
             Grab(gnome);
             return;
@@ -1295,6 +1321,18 @@ private:
     {
         me->SetFacingToObject(gnome);
 
+        // Before the cast, not after it. Spell::DoAllEffectOnTarget ends in
+        // CombatStart(unit, ...) for any target the caster is not friendly to, and
+        // faction 35 is only neutral towards the gnome's 36, not friendly -- so the beam
+        // landing is by itself enough to set the gnome on the device, and what the player
+        // sees is a leper that was standing still turning and fighting.
+        //
+        // CombatStart skips AI()->AttackStart for a REACT_PASSIVE target and Unit::Attack
+        // refuses a PACIFIED one, so restraining the gnome first is what stops the beam
+        // starting a fight. It is also the right moment for it: a gnome in the beam
+        // should stop what it was doing, not two seconds later when the seat takes it.
+        RestrainGnome(gnome);
+
         // Cast plainly, not triggered. TRIGGERED_FULL_MASK takes the cast time with it,
         // and a two second channel that is skipped never establishes -- the client is
         // told the cast began and then immediately that it is over, so what it draws is
@@ -1307,8 +1345,20 @@ private:
         // is a real possibility rather than a theoretical one, and it is worth a line in
         // the log rather than a beam that is simply missing with nothing to explain it.
         if (!me->CastSpell(gnome, SPELL_TAD_TRACTOR_BEAM, false))
+        {
             TC_LOG_ERROR("scripts.ai", "npc_target_acquisition_device: %s could not beam %s",
                 me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str());
+
+            // The beam never went out, so nothing was caught. The seating that follows is
+            // TRIGGERED_FULL_MASK and would have gone through anyway -- which is how a
+            // refused beam still ended in an abduction, with the gnome pulled off the
+            // floor by nothing visible at all. Let it go and start again instead.
+            ReleaseGnome(gnome);
+            _claimed.Clear();
+            _approaching = false;
+            _scheduler.Schedule(TAD_RETRY_DELAY, [this](TaskContext task) { Acquire(task); });
+            return;
+        }
 
         // A channel draws its beam between the caster and whatever is listed in
         // UNIT_DYNAMIC_FIELD_CHANNEL_OBJECTS. Spell::SendChannelStart fills that list from
@@ -1338,7 +1388,12 @@ private:
             if (!gnome || !gnome->IsAlive() || gnome->GetVehicle())
             {
                 // Lost between choosing it and lifting it. Start again rather than
-                // seat nothing and sit out the carry empty.
+                // seat nothing and sit out the carry empty. A gnome that is still here
+                // but has been taken by another device keeps that device's restraint, so
+                // only one this device is walking away from is let go.
+                if (gnome && !gnome->GetVehicle())
+                    ReleaseGnome(gnome);
+
                 _claimed.Clear();
                 _approaching = false;
                 _scheduler.Schedule(TAD_RETRY_DELAY, [this](TaskContext task) { Acquire(task); });
@@ -1477,9 +1532,22 @@ private:
                 me->GetGUID().ToString().c_str(), gnome->GetGUID().ToString().c_str(), SQUAD_ALERT_RANGE);
     }
 
-    // Nearest gnome that is alive, out of a seat, and not already claimed.
+    // The same test Spell::CheckCast will apply to the beam, down to the ignore flags, so
+    // a gnome that passes here is one the cast will accept. M2 doodads are ignored on both
+    // sides: a crate or a lamppost between the device and the floor is not cover.
+    bool InBeamSight(Creature const* gnome) const
+    {
+        return gnome->IsWithinLOSInMap(me, VMAP::ModelIgnoreFlags::M2);
+    }
+
+    // Nearest gnome that is alive, out of a seat, in sight, and not already claimed.
+    // _blind counts the ones that failed only on sight, so a device that has stopped
+    // finding anything can say whether that is because the floor is empty or because it
+    // cannot see any of it.
     Creature* FindGnome() const
     {
+        _blind = 0;
+
         std::list<Creature*> gnomes;
         me->GetCreatureListWithEntryInGrid(gnomes, NPC_ABDUCTION_TARGET, TAD_SEARCH_RANGE);
         if (gnomes.empty())
@@ -1499,6 +1567,16 @@ private:
 
             if (IsClaimedElsewhere(devices, gnome->GetGUID()))
                 continue;
+
+            // Behind a wall, under a platform, on the far side of a train. The beam is a
+            // real cast, so Spell::CheckCast refuses it for line of sight, and a device
+            // that settles on one of these spends its whole run closing on something it
+            // can never lift -- while the gnome it walked past goes untouched.
+            if (!InBeamSight(gnome))
+            {
+                ++_blind;
+                continue;
+            }
 
             float const dist = me->GetDistance(gnome);
             if (!best || dist < bestDist)
@@ -1528,6 +1606,8 @@ private:
     TaskScheduler _scheduler;
     ObjectGuid _claimed;
     ObjectGuid _falling;
+    mutable uint32 _blind = 0;
+    uint32 _emptyTries = 0;
     Position _approachTo;
     bool _approaching = false;
     bool _executing = false;

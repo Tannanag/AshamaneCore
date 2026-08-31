@@ -1035,6 +1035,34 @@ struct npc_target_acquisition_device : public ScriptedAI
     {
         _scheduler.CancelAll();
 
+        // The device flies, and it is the core that decides so: 46012 is InhabitType 4,
+        // and Creature::UpdateMovementFlags reads that every tick and hands out
+        // MOVEMENTFLAG_DISABLE_GRAVITY while the device is off the ground. It gets that
+        // right on the first spawn and never again, because the despawn at the end of a
+        // run poisons it.
+        //
+        // ReleaseAndDespawn goes through Creature::ForcedDespawn, which kills the device
+        // first -- and Creature::setDeathState JUST_DIED drops a flying corpse with
+        // MotionMaster::MoveFall (Creature.cpp:1840). MoveFall's first act is
+        // SetFall(true) (MotionMaster.cpp:653), and RemoveCorpse, which follows
+        // immediately, only calls StopMoving: the spline ends, the flag does not.
+        //
+        // So the device comes back five seconds later still flagged as falling, and the
+        // two halves of UpdateMovementFlags are then deadlocked against each other. It
+        // will not give an airborne creature disable-gravity while IsFalling() is true,
+        // and it only clears the fall for a creature that is *not* airborne -- and the
+        // device respawns at its post, well off the depot floor. Neither condition can
+        // be met, and the tick that would fix it re-asserts it instead.
+        //
+        // A device in that state is a ground unit as far as the client is concerned: it
+        // drops to the floor on sight and is snapped back up by every spline the script
+        // sends, which is the falling-and-teleporting the runs turned into. Clearing the
+        // fall here is what breaks the deadlock -- the next tick then sees an airborne
+        // creature that is not falling and gives the gravity back on its own. It is set
+        // directly as well so the first frame after the respawn is already right.
+        me->SetFall(false);
+        me->SetDisableGravity(true);
+
         // A run cut short -- a grid unload, a .reload -- leaves its gnome restrained and
         // possibly condemned, and a condemned gnome that is simply forgotten is a hostile
         // creature standing in the middle of the depot. A despawn unseats it through

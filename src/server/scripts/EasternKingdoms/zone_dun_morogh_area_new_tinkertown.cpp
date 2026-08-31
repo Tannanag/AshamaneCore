@@ -1025,6 +1025,7 @@ struct npc_target_acquisition_device : public ScriptedAI
             ReleaseGnome(gnome);
 
         _claimed.Clear();
+        _falling.Clear();
         _approaching = false;
         _executing = false;
         _leaving = false;
@@ -1070,9 +1071,32 @@ struct npc_target_acquisition_device : public ScriptedAI
             return;
 
         if (apply)
+        {
             RestrainGnome(gnome);
-        else
-            ReleaseGnome(gnome);
+            return;
+        }
+
+        ReleaseGnome(gnome);
+
+        // A gnome that leaves the seat alive falls on its own: Unit::_ExitVehicle reads
+        // the ground under the device and launches the drop itself, and nothing disturbs
+        // it. A gnome that leaves because it has been shot does not, and it takes two
+        // things going wrong to get there.
+        //
+        // Unit::setDeathState calls ExitVehicle -- which is what runs this hook -- and
+        // then, four lines later, GetMotionMaster()->Clear, MoveIdle, StopMoving and
+        // DisableSpline. The exit's own fall is launched and wiped inside the one call,
+        // so anything issued from here goes with it.
+        //
+        // Creature::setDeathState has a fall of its own for this, but it is guarded by
+        // CanFly() || IsFlying() and the gnome passes neither by the time it is reached:
+        // the seat's VEHICLE_SEAT_FLAG_DISABLE_GRAVITY is what made it airborne, and
+        // Vehicle::RemovePassenger gives gravity back before this hook is even called.
+        //
+        // So the body is dropped from UpdateAI instead, one tick later, where the death
+        // is finished and there is nothing left to undo it.
+        if (!gnome->IsAlive())
+            _falling = gnome->GetGUID();
     }
 
     void MovementInform(uint32 type, uint32 id) override
@@ -1090,6 +1114,17 @@ struct npc_target_acquisition_device : public ScriptedAI
 
     void UpdateAI(uint32 diff) override
     {
+        // MotionMaster::MoveFall finds the ground under the body and drops it straight
+        // down, and it is a no-op when there is none to speak of -- a gnome shot while a
+        // device happened to be hovering a foot off the floor simply stays where it fell.
+        if (!_falling.IsEmpty())
+        {
+            if (Creature* gnome = ObjectAccessor::GetCreature(*me, _falling))
+                gnome->GetMotionMaster()->MoveFall();
+
+            _falling.Clear();
+        }
+
         _scheduler.Update(diff);
     }
 
@@ -1407,6 +1442,7 @@ private:
 
     TaskScheduler _scheduler;
     ObjectGuid _claimed;
+    ObjectGuid _falling;
     Position _approachTo;
     bool _approaching = false;
     bool _executing = false;

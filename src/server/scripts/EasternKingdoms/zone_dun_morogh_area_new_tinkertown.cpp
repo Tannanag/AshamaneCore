@@ -829,9 +829,10 @@ enum TargetAcquisitionDevice
     // the Operatives outside the camp spar with.
     NPC_ABDUCTION_TARGET     = 46363,
 
-    // 85771 is a two second channel that reaches 30 yards; its periodic tick force-casts
-    // 85772, and 85772 is the SPELL_AURA_CONTROL_VEHICLE that puts the gnome in the seat.
-    SPELL_TAD_TRACTOR_BEAM   = 85771,
+    // 85772 is the SPELL_AURA_CONTROL_VEHICLE that seats the gnome, and it carries
+    // SpellVisual 48423 -- the only art in this chain, and the reason the grab is left
+    // to the gnome to cast. 85771, the two second channel that nominally drives it, is
+    // deliberately not cast at all; see Grab.
     SPELL_RIDE_TAD           = 85772,
 
     SEAT_ABDUCTED_GNOME      = 0,
@@ -931,7 +932,7 @@ private:
         if (me->IsWithinDist(gnome, TAD_BEAM_RANGE))
         {
             me->GetMotionMaster()->MovementExpired();
-            Beam(gnome);
+            Grab(gnome);
             return;
         }
 
@@ -945,24 +946,30 @@ private:
         task.Repeat(TAD_RETRY_DELAY);
     }
 
-    void Beam(Creature* gnome)
+    void Grab(Creature* gnome)
     {
         me->SetFacingToObject(gnome);
 
-        // Triggered, because the beam is here for the look of the thing and a creature
-        // cast that CheckCast refuses is refused in total silence -- no message reaches
-        // anyone, and the device would hang in the air with no beam and no clue why. The
-        // device is faction 35 and the gnome 36, so target validity is a real way for
-        // that to happen. Spell::IsNeedSendToClient returns true on any non-zero
-        // SpellVisual, so a triggered cast still draws the beam.
-        me->CastSpell(gnome, SPELL_TAD_TRACTOR_BEAM, TRIGGERED_FULL_MASK);
-
+        // The device casts nothing here, and that is the point.
+        //
+        // 85771 has SpellVisualID 0 -- no art of its own -- and it is channeled, which
+        // by itself is enough to reach the client: Spell::IsNeedSendToClient
+        // (Spell.cpp:7310) returns true for any channeled spell whatever its visual. So
+        // casting it did not draw a beam; it put the device into a visible channel with
+        // nothing to show, which reads as an effect hanging on the device instead of on
+        // the gnome it is supposed to be lifting.
+        //
+        // The grab belongs to the gnome. The only art anywhere in this chain is
+        // SpellVisual 48423, and that is carried by 85772, which the gnome casts at the
+        // device -- see Board below. Leaving the device silent lets the effect play from
+        // the gnome's end, where it belongs.
         _scheduler.Schedule(TAD_BEAM_CHANNEL, [this](TaskContext /*task*/)
         {
             Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed);
             if (!gnome || !gnome->IsAlive() || gnome->GetVehicle())
             {
-                // Lost it during the channel. Start again rather than hold an empty beam.
+                // Lost between choosing it and lifting it. Start again rather than
+                // seat nothing and sit out the carry empty.
                 _claimed.Clear();
                 _approaching = false;
                 _scheduler.Schedule(TAD_RETRY_DELAY, [this](TaskContext task) { Acquire(task); });

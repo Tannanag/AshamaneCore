@@ -836,10 +836,52 @@ enum TargetAcquisitionDevice
     SPELL_TAD_TRACTOR_BEAM   = 85771,
     SPELL_RIDE_TAD           = 85772,
 
+    NPC_SAFE_OPERATIVE_LINE  = 45847,
+    NPC_SAFE_OFFICER_LINE    = 46025,
+
     SEAT_ABDUCTED_GNOME      = 0,
 
-    POINT_TAD_TARGET         = 10
+    POINT_TAD_TARGET         = 10,
+    POINT_TAD_DROP           = 11,
+    POINT_TAD_ROAM           = 12,
+
+    // The device hands its gnome to the squad through UnitAI::SetGUID, which is a no-op
+    // on every AI that does not override it -- so the sparring Operatives standing a few
+    // yards away hear this and correctly ignore it.
+    DATA_FIRING_SQUAD_TARGET = 1
 };
+
+// Three of the thirteen posts take their gnome to a firing squad instead of holding it
+// where they caught it; the other ten drift around their post until they let go. Each of
+// the three stops eight or nine yards short of the squad -- the gnome is put in range to
+// be shot, not delivered to their feet.
+struct TadPost
+{
+    float PostX, PostY;
+    float DropX, DropY, DropZ;
+};
+
+static constexpr TadPost TadCarryPosts[] =
+{
+    { -5014.29f, 789.721f, -5022.53f, 793.59f, 285.38f },   // squad on the west platform
+    { -4967.99f, 734.731f, -4959.04f, 735.21f, 283.24f },   // squad on the east walk
+    { -4989.07f, 767.175f, -4985.25f, 776.79f, 295.26f }    // the pair in the middle
+};
+
+// How close a device's home has to sit to a listed post to count as that post.
+static constexpr float TAD_POST_MATCH = 2.0f;
+
+// A device with nowhere to be drifts this far from its post, and picks a new spot this
+// often, which adds up to roughly the ground a held gnome covers before it is dropped.
+static constexpr float TAD_ROAM_RADIUS = 10.0f;
+static constexpr Milliseconds TAD_ROAM_INTERVAL = Milliseconds(4000);
+
+// The squad shoots what it is handed, from where it stands, and stops when the gnome is
+// dead or out of reach.
+static constexpr float SQUAD_FIRE_RANGE = 40.0f;
+static constexpr Seconds SQUAD_SHOT_MIN = Seconds(2);
+static constexpr Seconds SQUAD_SHOT_MAX = Seconds(3);
+static constexpr float SQUAD_ALERT_RANGE = 25.0f;
 
 // The beam's own range. The sweep is wider because a device whose post has nothing
 // that close closes the distance instead of standing idle.
@@ -886,6 +928,15 @@ struct npc_target_acquisition_device : public ScriptedAI
         _scheduler.CancelAll();
         _claimed.Clear();
         _approaching = false;
+        _carry = nullptr;
+
+        Position const home = me->GetHomePosition();
+        for (TadPost const& post : TadCarryPosts)
+            if (std::hypot(home.GetPositionX() - post.PostX, home.GetPositionY() - post.PostY) <= TAD_POST_MATCH)
+            {
+                _carry = &post;
+                break;
+            }
 
         // The device is scenery with a job; a victim would put a ChaseMovementGenerator
         // on MOTION_SLOT_ACTIVE and take the approach spline off it. AttackStart and
@@ -1002,6 +1053,12 @@ private:
             }
 
             Board(gnome);
+
+            if (_carry)
+                me->GetMotionMaster()->MovePoint(POINT_TAD_DROP, _carry->DropX, _carry->DropY, _carry->DropZ, false);
+            else
+                Roam();
+
             _scheduler.Schedule(TAD_HOLD_TIME, [this](TaskContext /*task*/) { ReleaseAndDespawn(); });
         });
     }
@@ -1021,8 +1078,32 @@ private:
             SEAT_ABDUCTED_GNOME + 1, me, TRIGGERED_FULL_MASK);
     }
 
+    // Nothing to deliver to, so the device drifts around its post while it holds the
+    // gnome rather than hanging perfectly still for half a minute.
+    void Roam()
+    {
+        _scheduler.Schedule(TAD_ROAM_INTERVAL, [this](TaskContext task)
+        {
+            Position const home = me->GetHomePosition();
+            float const angle = frand(0.0f, 2.0f * float(M_PI));
+            float const dist = frand(3.0f, TAD_ROAM_RADIUS);
+            me->GetMotionMaster()->MovePoint(POINT_TAD_ROAM,
+                home.GetPositionX() + std::cos(angle) * dist,
+                home.GetPositionY() + std::sin(angle) * dist,
+                home.GetPositionZ(), false);
+            task.Repeat(TAD_ROAM_INTERVAL);
+        });
+    }
+
     void ReleaseAndDespawn()
     {
+        // Hand the gnome over before letting go of it, so the squad has something to
+        // shoot the moment it is on the floor. SetGUID does nothing on an AI that has not
+        // asked for it, so the sparring Operatives nearby are untouched by this.
+        if (_carry)
+            if (Creature* gnome = ObjectAccessor::GetCreature(*me, _claimed))
+                AlertSquad(gnome);
+
         // Explicitly, before the despawn. Vehicle::Uninstall would clear the seat anyway,
         // but going through RemoveAllPassengers is what runs the gnome's exit and leaves
         // it standing on the floor rather than wherever the seat had it.
@@ -1030,6 +1111,17 @@ private:
             kit->RemoveAllPassengers();
 
         me->DespawnOrUnsummon(Milliseconds(0), TAD_RESPAWN_DELAY);
+    }
+
+    void AlertSquad(Creature* gnome)
+    {
+        std::list<Creature*> line;
+        me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OPERATIVE_LINE, SQUAD_ALERT_RANGE);
+        me->GetCreatureListWithEntryInGrid(line, NPC_SAFE_OFFICER_LINE, SQUAD_ALERT_RANGE);
+
+        for (Creature* shooter : line)
+            if (shooter->IsAIEnabled && shooter->IsAlive())
+                shooter->AI()->SetGUID(gnome->GetGUID(), DATA_FIRING_SQUAD_TARGET);
     }
 
     // Nearest gnome that is alive, out of a seat, and not already claimed.
@@ -1084,6 +1176,96 @@ private:
     ObjectGuid _claimed;
     Position _approachTo;
     bool _approaching = false;
+    TadPost const* _carry = nullptr;
+};
+
+// The Operatives and the Officer standing in a line at each of the three drop points.
+// They are not sparring: nothing caps their damage against 46363, so a gnome put down in
+// front of them dies. What they must not do is join the rest of the camp's brawling --
+// they hold their line, and the only gnome they ever touch is the one a device hands
+// over.
+//
+// The target is not routed through the threat system. REACT_PASSIVE stops the Operative
+// choosing anything for itself, but it also makes Creature::SelectVictim refuse to keep a
+// victim, which walks the squad straight into an evade the moment it is given one. So the
+// mark is held as a guid and shot at directly, and combat bookkeeping stays out of it.
+struct npc_safe_operative_firing_squad : public ScriptedAI
+{
+    npc_safe_operative_firing_squad(Creature* creature) : ScriptedAI(creature)
+    {
+        // The line does not advance. Set before any AttackStart can be reached.
+        SetCombatMovement(false);
+    }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _mark.Clear();
+        _warned = false;
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    // The two routes into a fight this squad has no business being in.
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    void SetGUID(ObjectGuid guid, int32 id) override
+    {
+        if (id != DATA_FIRING_SQUAD_TARGET)
+            return;
+
+        _mark = guid;
+        _warned = false;
+        _scheduler.CancelAll();
+
+        // Staggered, so four rifles on the same line do not fire as one.
+        _scheduler.Schedule(Milliseconds(urand(0, 1200)), [this](TaskContext task)
+        {
+            Creature* gnome = ObjectAccessor::GetCreature(*me, _mark);
+            if (!gnome || !gnome->IsAlive())
+            {
+                _mark.Clear();
+                return;
+            }
+
+            if (me->IsWithinDistInMap(gnome, SQUAD_FIRE_RANGE))
+            {
+                me->SetFacingToObject(gnome);
+
+                // Not triggered, and the result is checked. The sparring Operatives fire
+                // this same spell, but they fire it at 46391, which is faction 14 and
+                // hostile to everything; these squads are handed 46363, which is faction
+                // 36, so target validity is genuinely untested here. A refused creature
+                // cast is silent, and at this server's log level TC_LOG_DEBUG writes
+                // nothing at all -- hence LOG_ERROR, once per gnome rather than every
+                // two seconds.
+                if (me->CastSpell(gnome, SPELL_SHOOT, false))
+                {
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                }
+                else if (!_warned)
+                {
+                    _warned = true;
+                    TC_LOG_ERROR("scripts.ai", "npc_safe_operative_firing_squad: %s refused %u at %s, dist %.1f",
+                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
+                        gnome->GetGUID().ToString().c_str(), me->GetExactDist(gnome));
+                }
+            }
+
+            task.Repeat(SQUAD_SHOT_MIN, SQUAD_SHOT_MAX);
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    TaskScheduler _scheduler;
+    ObjectGuid _mark;
+    bool _warned = false;
 };
 
 void AddSC_dun_morogh_area_new_tinkertown()
@@ -1093,4 +1275,5 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_safe_operative_carrier);
     RegisterCreatureAI(npc_safe_operative_medic);
     RegisterCreatureAI(npc_target_acquisition_device);
+    RegisterCreatureAI(npc_safe_operative_firing_squad);
 }

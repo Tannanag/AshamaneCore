@@ -9,7 +9,7 @@ Each has the reconnaissance it needs written up below.
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_03_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_04_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -334,12 +334,24 @@ values, keyed by position and matched against the world DB:
 |---|---|---|
 | 42552 Physician's Assistant | 69 `EMOTE_STATE_USE_STANDING` | 167775 carries 69 and is correct; 167917 is now the task 1 scene actor and takes 69 from the script mid-run; 169002 is deleted |
 | 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
-| 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value |
+| 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value; a tenth row was a duplicate and is deleted, see below |
 | 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
 | 46267 Rescued Survivor | `EmoteState` 0 throughout; the pose is `StandState` — 8 `KNEEL` or 1 `SIT` | written and applied, see below |
 
-So most of this is **already right**. The gap is spawns with no `creature_addon` row,
-which silently inherit `creature_template_addon`:
+**46230 guid 169037 is deleted**, in `2026_09_01_03_world.sql`. The room held ten rows of
+46230 against the nine positions the table above counts: 169037 and **168135** stood 0.20
+yards apart at the same height, on the same orientation 4.06662, both posed with emote
+233 — one technician entered twice, with the two models inside one another. 168135 keeps
+the post. Both rows are backed up at
+`/home/serverproject/dumps/safe_technician_169037_backup.sql`.
+
+This is a different fault from the stand-ins task 1 found: not an approximation of a
+scene, just a duplicated row. Worth checking the other entries for both shapes — a
+near-zero distance between two spawns of one entry with matching orientation is the
+signature.
+
+So most of the rest of this is **already right**. The gap is spawns with no
+`creature_addon` row, which silently inherit `creature_template_addon`:
 
 - ~~**42552 guid 169002**~~ — deleted by task 1; it was a stand-in for a node of the
   Assistant's walk, not a spawn that belongs in the room.

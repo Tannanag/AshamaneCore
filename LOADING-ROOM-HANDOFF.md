@@ -9,7 +9,7 @@ Each has the reconnaissance it needs written up below.
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_02_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_03_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -78,8 +78,8 @@ Spawn guids in the Loading Room:
 - Sanitron 500 — **168370, 168381, 168860**
 - Clean Cannon X-2 — **167786, 167789, 167792, 167922**
 - Physician's Assistant — **167775, 167917, 169002**
-- S.A.F.E. Officer — **167810, 167812, 168990** (168990 is the one that patrols),
-  plus 167623 and 167940 which run `npc_safe_operative_firing_squad`
+- S.A.F.E. Officer — **167810, 168990** (168990 is the one that patrols; 167812 is
+  deleted, see task 2), plus 167623 and 167940 which run `npc_safe_operative_firing_squad`
 
 Quests: **27635 Decontamination**, **28169 Withdraw to the Loading Room!**
 
@@ -313,7 +313,17 @@ problem, so pathfinding between nodes is safe here.
 right through the walk and does not line up with either pause, so the one-shots in task 3
 are a chance roll on a timer, not part of this route.
 
-Only 168990 was touched. 167810 and 167812 are still `MovementType` 0.
+**167812 is deleted**, in `2026_09_01_02_world.sql`. It stood 0.97 yards off point 18 of
+the route above, so once 168990 starts walking the officer passes through his own double.
+It is the same stand-in pattern task 1 found under 42552 and 46267 — a static NPC
+approximating a stretch of a scene — and it is the first confirmation that the pattern
+holds under an entry other than those two. Nothing referenced the spawn: no addon,
+formation, pool or event row. The row is backed up at
+`/home/serverproject/dumps/safe_officer_167812_backup.sql`, which matters because the
+world DB is MyISAM and the delete does not roll back.
+
+167810 stays. It is 9.6 yards from the nearest node, far enough not to be a stand-in for
+any part of the route, and it holds a post.
 
 ### 3. Emote state for the other gnomes  — *46267 written, not signed off; the rest not started*
 

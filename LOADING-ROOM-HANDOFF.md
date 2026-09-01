@@ -4,7 +4,7 @@ Working document for the Loading Room pass. Seven tasks, none of them started; w
 done so far is the toolchain and the reconnaissance each one needs.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_08_31_05_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_01_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -97,11 +97,11 @@ The run, timed from the moment the gnome appears:
 | 2.067 | plays one of emote **1 Talk / 5 Exclamation / 20 Beg** |
 | 2.167 | says one of its seven lines |
 | 6.889 | steps off the pad to (−5163.96, 759.53) — the Assistant leaves its spot in the same instant, **at a run** |
-| 10.071 | Assistant reaches (−5163.26, 763.441) and plays **25 OneShotPoint** |
+| 10.071 | Assistant reaches (−5163.26, 763.441), turns to 4.24115 and plays **25 OneShotPoint** |
 | 10.229 | Assistant says "Ah, a new arrival. Right this way, sir." |
 | 15.007 | Assistant sets off back, leading; the gnome follows at 15.400 |
-| 22.683 | Assistant reaches its post at (−5161.37, 775.453) and takes **EmoteState 69** |
-| 27.543 | gnome reaches Gnomeregan Mat 156538 and takes **StandState 1 SIT** (the script sits it on arrival, which is a little earlier) |
+| 22.683 | Assistant reaches its post at (−5161.37, 775.453), turns to 0.71558 and takes **EmoteState 69** |
+| 27.543 | gnome reaches Gnomeregan Mat 156538, turns to 4.38078 and takes **StandState 1 SIT** (the script does both on arrival, which is a little earlier) |
 | 38.471 | Assistant drops the emote state and walks home |
 | 48.591 | gnome despawns |
 | 61.073 | the next one arrives |
@@ -204,9 +204,33 @@ is how it actually runs. Legs go out on the clock while the previous one is stil
 moving, redirecting the walker from wherever it has got to. Only the Assistant's walk
 home is answered on arrival, so its facing can be put back once it is standing there.
 
-Not done, and deliberately: the gnome sits facing the way it walked in, because retail
-sends no facing when it stops. If it reads wrong in game the fix is one `SetFacingTo` in
-`ARRIVE_TO_SIT`.
+**Every stop sets a facing, and I nearly missed all four of them.** A walk that ends
+without one leaves the walker looking whichever way its last node pointed it, which at
+the mat is straight into the north wall. The facings arrive as a facing-only spline —
+`Face: 3 (Angle)` with `PointsCount: 0` — in the same `SMSG_ON_MONSTER_MOVE` that stops
+the walk:
+
+| Where | Facing | |
+|---|---|---|
+| Assistant at the meet point | 4.2411499 | 243° |
+| Assistant at the post | 0.7155849 | 41° |
+| Assistant at home | 1.3962633 | 80° |
+| gnome on the mat | 4.3807764 | 251° |
+
+All four are whole degrees, so they are authored values rather than anything to
+recompute from the direction of travel. Two are corroborated by the stand-in spawns this
+scene replaced: **0.71558 is exactly the orientation 167917 was standing at** (the post)
+and **4.38078 exactly 168909's** (the mat).
+
+The Assistant's home facing lives on the spawn in `creature.orientation`, where a home
+facing belongs, and the script reads it back on arrival. The first version of this pass
+derived that value from the direction the last leg leaves it in and got 3.06154, which
+is wrong by 95° — `2026_09_01_00_world.sql` corrects it to 1.3962633.
+
+**Reading facings out of the dump:** they are nested two levels deep, as
+`(MovementMonsterSpline) (MovementSpline) FaceDirection:`. A filter that matches on the
+start of the line finds nothing and the whole thing looks like it sends no facings at
+all, which is what happened here. Match anywhere in the line.
 
 ### 2. Patrol path for the S.A.F.E. Officer  — *not started*
 

@@ -849,10 +849,14 @@ enum PhysiciansAssistantGreeter
     // is an emote in its own right; an empty field is 0 and has no name there.
     EMOTE_STATE_NO_EMOTE   = 0,
 
-    // Nothing hangs off arriving at most legs, so they all share one id. Only the walk
-    // home is answered, and only to put the Assistant's facing back.
+    // The gnome's legs; nothing on this script hears about them, because its
+    // MovementInform goes to the entry's default AI.
     POINT_LEG              = 1,
-    POINT_ASSISTANT_HOME   = 2
+
+    // The Assistant's three, each answered to turn it the right way on arrival.
+    POINT_MEET             = 2,
+    POINT_POST             = 3,
+    POINT_ASSISTANT_HOME   = 4
 };
 
 // The arrival plays one of these with its line, a tenth of a second ahead of the text.
@@ -882,6 +886,20 @@ static constexpr Milliseconds ARRIVE_TO_SIT     = Milliseconds(27543);
 static constexpr Milliseconds ARRIVE_TO_GO_HOME = Milliseconds(38471);
 static constexpr Milliseconds ARRIVE_TO_DESPAWN = Milliseconds(48591);
 static constexpr Milliseconds CYCLE             = Milliseconds(61073);
+
+// Where the scene turns someone to face when it puts them down somewhere. Every one of
+// these is sent as a facing-only spline when the walk ends -- Face 3 (Angle) with no
+// path -- rather than being left to the direction of travel, and every one is a whole
+// number of degrees, so they are authored values and not something to recompute.
+//
+// Two of them are corroborated by the spawns this scene replaced: 0.71558 is the
+// orientation creature 167917 was standing at, which was the post, and 4.38078 was
+// 168909's, which was the mat. Both were stand-ins posed from this scene.
+static constexpr float FACING_MEET = 4.2411499f;   // 243 degrees, turned towards the gnome
+static constexpr float FACING_POST = 0.7155849f;   //  41 degrees, over the mat
+static constexpr float FACING_MAT  = 4.3807764f;   // 251 degrees, the gnome once it sits
+// The Assistant's facing at home is 1.39626 -- 80 degrees -- and lives on the spawn in
+// creature.orientation rather than here, because that is where a home facing belongs.
 
 // The Gnomeregan Teleporter, gameobject guid 156676, sits at (-5161.78, 754.694). The
 // gnome is put down on it facing 1.88496 -- position and facing both taken from
@@ -982,12 +1000,12 @@ static std::vector<Position> AssistantRouteBack()
 // sends the way out; the way back arrives there as four splines, but each is issued
 // while the one before it is still running, so what is walked is one continuous line
 // either way.
-static void WalkRoute(Unit* mover, Position const* route, size_t count)
+static void WalkRoute(Unit* mover, uint32 pointId, Position const* route, size_t count)
 {
     // MoveSplineInit reads args.walk off MOVEMENTFLAG_WALKING in its constructor, so
     // this has to be set before the generator builds the spline.
     mover->SetWalk(true);
-    mover->GetMotionMaster()->MoveSmoothPath(POINT_LEG, route, count, true);
+    mover->GetMotionMaster()->MoveSmoothPath(pointId, route, count, true);
 }
 
 // The Physician's Assistant beside the Gnomeregan Teleporter, creature guid 167917.
@@ -1042,7 +1060,17 @@ struct npc_physicians_assistant_greeter : public ScriptedAI
     {
         // MoveSmoothPath finishes through EffectMovementGenerator, so arrivals come back
         // as EFFECT_MOTION_TYPE and not the POINT_MOTION_TYPE a MovePoint would give.
-        if (type == EFFECT_MOTION_TYPE && id == POINT_ASSISTANT_HOME)
+        //
+        // A walk that ends without one of these leaves the Assistant looking whichever
+        // way the last node pointed it, which on the way back is straight at the wall.
+        if (type != EFFECT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_MEET)
+            me->SetFacingTo(FACING_MEET);
+        else if (id == POINT_POST)
+            me->SetFacingTo(FACING_POST);
+        else if (id == POINT_ASSISTANT_HOME)
             me->SetFacingTo(me->GetHomePosition().GetOrientation());
     }
 
@@ -1121,14 +1149,14 @@ private:
             // The gnome steps off the pad and the Assistant leaves its spot in the same
             // instant, so that the two meet.
             if (Creature* arrival = GetArrival())
-                WalkRoute(arrival, ArrivalStepOff, std::extent<decltype(ArrivalStepOff)>::value);
+                WalkRoute(arrival, POINT_LEG, ArrivalStepOff, std::extent<decltype(ArrivalStepOff)>::value);
 
             // The one leg in the scene that is run rather than walked: the Assistant
             // hurries over to a gnome that has just appeared, 21.9 yards in 2.9 seconds.
             // That is 8 yards a second, which is what creature_template.speed_run
             // 1.14286 already gives it, so no speed is set here.
             me->SetWalk(false);
-            me->GetMotionMaster()->MoveSmoothPath(POINT_LEG, AssistantRoute,
+            me->GetMotionMaster()->MoveSmoothPath(POINT_MEET, AssistantRoute,
                 std::extent<decltype(AssistantRoute)>::value, false);
         });
 
@@ -1152,14 +1180,14 @@ private:
             // leads rather than follows: it sets off first and is standing over the mat
             // before the gnome gets there.
             std::vector<Position> const route = AssistantRouteBack();
-            WalkRoute(me, route.data(), route.size());
+            WalkRoute(me, POINT_POST, route.data(), route.size());
         });
 
         _scheduler.Schedule(ARRIVE_TO_FOLLOW, [this](TaskContext /*task*/)
         {
             if (Creature* arrival = GetArrival())
             {
-                WalkRoute(arrival, ArrivalWalkToMat, std::extent<decltype(ArrivalWalkToMat)>::value);
+                WalkRoute(arrival, POINT_LEG, ArrivalWalkToMat, std::extent<decltype(ArrivalWalkToMat)>::value);
                 _seating = true;
             }
         });
@@ -1204,8 +1232,16 @@ private:
     {
         _seating = false;
 
-        if (Creature* arrival = GetArrival())
-            arrival->SetStandState(UNIT_STAND_STATE_SIT);
+        Creature* arrival = GetArrival();
+        if (!arrival)
+            return;
+
+        // Turned before it is sat down, and in that order: the walk ends heading
+        // north-west into the wall, so a gnome that sits on the direction it arrived on
+        // has its back to the room. Retail sends the turn and the stand state in the
+        // same instant, the turn first.
+        arrival->SetFacingTo(FACING_MAT);
+        arrival->SetStandState(UNIT_STAND_STATE_SIT);
     }
 
     Creature* GetArrival()

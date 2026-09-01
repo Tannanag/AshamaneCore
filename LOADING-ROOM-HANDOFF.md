@@ -1,14 +1,15 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Seven tasks. **Task 1 is done** — watched in
-game and signed off. Task 3 has its 46267 half written and applied but **not signed off**,
-and the rest of it is untouched; the other five are not started. Each has the
-reconnaissance it needs written up below.
+game and signed off. Task 2 is written and applied but **not signed off**, and needs a
+worldserver restart before any of it shows. Task 3 has its 46267 half written and applied,
+also **not signed off**, and the rest of it is untouched; the other four are not started.
+Each has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_01_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_02_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -264,26 +265,55 @@ is wrong by 95° — `2026_09_01_00_world.sql` corrects it to 1.3962633.
 start of the line finds nothing and the whole thing looks like it sends no facings at
 all, which is what happened here. Match anywhere in the line.
 
-### 2. Patrol path for the S.A.F.E. Officer  — *not started*
+### 2. Patrol path for the S.A.F.E. Officer  — *written and applied, not signed off*
 
-Spawn **168990** at (−5180.01, 736.88, 287.4) — the sniffed guid ends its run on that
-exact point, which identifies it. 75 splines, one continuous loop around the room, sent
-as a new spline roughly every 2.4s, so the path is the sequence of spline endpoints
-rather than one waypoint list.
+`2026_09_01_01_world.sql`. Path **1689900** on spawn **168990**, 44 nodes, one closed
+circuit of the room at walk speed. Hand-applied, so the updater will run it again on the
+next start; it is written to survive that.
 
-The loop, in order: south along X ≈ −5180 to Y 660, west to −5191, east across to
-−5162, north up the east side to Y 706, back west to −5186, north along X ≈ −5192 to
-Y 730, northeast to (−5170, 773), then a short circuit around Y 758–773 and back south
-to the spawn point.
+**Needs a worldserver restart, not `.reload waypoint_data`.** The spawn had no
+`creature_addon` row at all, and that table has no `.reload` — until it restarts,
+`LoadCreatureAddons` sees no `path_id` and silently downgrades `MovementType` 2 back to
+idle, so the officer stands exactly as he does now and nothing looks different. Check
+the log for `sql.sql` lines about a waypoint motion type with no path assigned; zero of
+those is the pass signal.
 
-To do:
-- Use the `patrol-paths` skill, but keep the SQL header short — a title line and only
-  what a reader cannot get from the statements. The skill asks for a long header naming
-  where the data came from; that does not apply here.
-- Point 1 must be the node nearest the spawn, or the NPC walks the whole diameter of
-  its own path on every respawn.
-- Only guid 168990. Do not touch 167810 or 167812 — scope every DB edit to the spawns
-  actually named, never to every spawn of the entry.
+The route was readable because the officer walked it **twice** inside the run — 75
+splines, 44 endpoints, and all 30 nodes the two laps have in common are bit-identical
+floats. A lap takes 147.3s. The loop closes: the last node is 8.3 yards from the first.
+
+**The nodes are the spline endpoints, not the `WayPoints`.** A new spline goes out every
+~2.4s and redirects the officer before the previous one finishes, so its endpoint is the
+authored node while the `WayPoints` inside it are pathfinder filler. Two legs come as a
+multi-point `Points` list instead (the ramp down to Z 285.59); there the last point is
+the node and the rest is the ramp.
+
+**Point 1 is the spawn point exactly** — (−5180.01, 736.88) matched a node at 0.0000
+yards, which is also what identified the spawn. The recovered order started elsewhere, so
+the list is rotated; `waypoint_data` is cyclic, so that changes only where the route is
+entered.
+
+**Two nodes are more than corners**, and both are in the file:
+
+- **point 23** (−5162.50, 706.267) — the dead end at the north of the east corridor. He
+  arrives, stands **4.4s**, then walks back south. Timed twice, 4.42 and 4.38.
+- **point 37** (−5171.09, 773.307) — a half-second halt with a facing-only spline,
+  `FaceDirection` 4.6251225, a round **265°**, which is not his direction of travel. It
+  is preceded by point 36 only 0.73 yards away; both are real endpoints, so both are
+  kept.
+
+**No speed is set anywhere.** Every leg computes to 2.5 yd/s and `speed_walk` 1 on the
+template already gives exactly that, so `move_type` stays 0.
+
+**The long legs are straight.** Points 24→25 is 22.9 yards and 4→5 is 21.7, and the
+filler inside both is a straight line down an open corridor — none of task 1's furniture
+problem, so pathfinding between nodes is safe here.
+
+**His barking is unrelated to the patrol.** `SMSG_EMOTE` fires on a steady ~4.8s cadence
+right through the walk and does not line up with either pause, so the one-shots in task 3
+are a chance roll on a timer, not part of this route.
+
+Only 168990 was touched. 167810 and 167812 are still `MovementType` 0.
 
 ### 3. Emote state for the other gnomes  — *46267 written, not signed off; the rest not started*
 

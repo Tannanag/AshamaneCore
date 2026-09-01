@@ -67,16 +67,17 @@ Y 660…776, Z ≈ 286–288.
 | 46268 | Survivor | already cowers; `creature_template_addon.emote` 431 |
 | 46025 | S.A.F.E. Officer | patrols — task 2 |
 | 46363 / 46391 | Crazed Leper Gnome | 46363 carries auras 95205, 86400, 86414 |
-| 45847 | S.A.F.E. Operative | sparring side of the battle — task 4 |
+| 45847 | S.A.F.E. Operative | sparring side of the battle — task 4; four of them are the cannon gunners — task 7 |
 | 46185 | Sanitron 500 | VehicleId 1172, `npc_sanitron_5000` — tasks 5, 6 |
-| 46208 | Clean Cannon X-2 | VehicleId 1173, no script — task 7 |
+| 46208 | Clean Cannon X-2 | VehicleId 1173, one seat 8674, no script; each has a gunner standing on it — task 7 |
 | 46165 | Decontamination Bunny | casts the wash stages |
 | 46230 | S.A.F.E. Technician | speaks during the wash |
 
 Spawn guids in the Loading Room:
 
 - Sanitron 500 — **168370, 168381, 168860**
-- Clean Cannon X-2 — **167786, 167789, 167792, 167922**
+- Clean Cannon X-2 — **167786, 167789, 167792, 167922**, each with its gunner at
+  guid + 1 — 167787, 167790, 167793, 167923 (entry 45847)
 - Physician's Assistant — **167775, 167917, 169002**
 - S.A.F.E. Officer — **167810, 168990** (168990 is the one that patrols; 167812 is
   deleted, see task 2), plus 167623 and 167940 which run `npc_safe_operative_firing_squad`
@@ -355,13 +356,17 @@ So most of the rest of this is **already right**. The gap is spawns with no
 
 - ~~**42552 guid 169002**~~ — deleted by task 1; it was a stand-in for a node of the
   Assistant's walk, not a spawn that belongs in the room.
-- **45847 guids 167787, 167790, 167793, 167923, 168075, 168133** — inherit 214
-  `READY_RIFLE`. 214 is right for the Operatives fighting outside, but these six stand
-  at the decontamination stations inside the room, where the one spawn that does have a
-  row (168120) is set to 69.
+- **45847 guids 168075, 168133** — inherit 214 `READY_RIFLE`. 214 is right for the
+  Operatives fighting outside, but these two stand at the decontamination stations inside
+  the room, where the one spawn that does have a row (168120) is set to 69.
+- ~~**45847 guids 167787, 167790, 167793, 167923**~~ — these were counted here as four
+  more of the same and they are not. They are the four cannon gunners, each standing on a
+  Clean Cannon X-2 half a yard away; **task 7** has them. A seated passenger takes its
+  pose from the vehicle seat, so 69 `USE_STANDING` would be wrong for them and 214 is
+  left where it is.
 
-The dump does not directly show those six, so confirm in game before writing rows for
-them rather than assuming they match 168120.
+The dump does not directly show 168075 or 168133, so confirm in game before writing rows
+for them rather than assuming they match 168120.
 
 **46267 Rescued Survivor — written and applied in `2026_08_31_03_world.sql`, not yet
 checked in game.** `creature_addon` has no `.reload`, so none of it shows until the
@@ -491,26 +496,75 @@ To do:
 - The file must survive being applied twice: hand-applying skips the `updates` row, so
   the updater will run it again.
 
-### 7. Clean Cannon X-2 not interactable  — *not started*
+### 7. Clean Cannon X-2 — put its gunner in it  — *not started*
 
-46208 has `VehicleId` 1173 and **no `npc_spellclick_spells` row at all**. This is the
-failure the carry scene already documented: `Vehicle::Install` sets
-`UNIT_NPC_FLAG_SPELLCLICK` whenever a seat is usable, so the client draws the cog
-cursor and offers an interaction that cannot do anything, because there is no
-spellclick spell behind it.
+Each of the four cannons has a **S.A.F.E. Operative standing on top of it**, and none of
+them is seated. Seating them is the task; the cog cursor below turns out to be the same
+problem seen from the other end, and seating the gunner is what fixes it.
 
-Current `unit_flags` is 33536 = `UNIT_FLAG_IMMUNE_TO_PC` | `UNIT_FLAG_IMMUNE_TO_NPC` |
-`UNIT_FLAG_UNK_15` — nothing there stops the cursor.
+| Cannon 46208 | Gunner 45847 | apart | orientation |
+|---|---|---|---|
+| 167786 (−5163.96, 719.311) | **167787** | 0.572 | 3.15905 both |
+| 167789 (−5184.19, 712.642) | **167790** | 0.564 | 0.226893 both |
+| 167792 (−5164.86, 709.828) | **167793** | 0.571 | 2.67035 both |
+| 167922 (−5183.92, 722.26) | **167923** | 0.565 | 5.88176 both |
+
+The pairing is not a guess. Each gunner is the cannon's guid **+1**, so they were entered
+together; the orientations match to all six decimals; every gap is 0.56–0.57 yards; and
+every gunner sits at Z 287.754 against the cannon's 287.48, a uniform 0.274 **above** it.
+Four spawns, four cannons, one each.
+
+**Nothing seats them today.** `vehicle_template_accessory` and `vehicle_accessory` are
+both empty for 46208 — and for 46185 as well. One of those two tables is the mechanism:
+`vehicle_template_accessory` keyed on entry 46208 covers all four in a single row, and
+every spawn of 46208 is one of these four, so entry scope and guid scope come to the same
+thing here. `vehicle_accessory` keyed on the four guids is the narrower option.
+
+**This is also the cursor fix, and it retires the option list that used to be here.**
+Vehicle **1173 has exactly one seat, 8674**. `Vehicle::Vehicle` counts the seats that
+pass `CanEnterOrExit()` into `UsableSeatNum` and sets `UNIT_NPC_FLAG_SPELLCLICK` when
+that count is non-zero, with the core's own comment reading *"Set or remove correct flags
+based on available seats. Will overwrite db data (if wrong)."* Two things follow:
+
+- **Clearing `UNIT_NPC_FLAG_SPELLCLICK` from the spawn's `npcflag` cannot work.** The
+  constructor recomputes the flag from the seat count on every spawn and overwrites
+  whatever the DB said. That was the first and cheapest option in the old list and it is
+  a dead end.
+- **`Vehicle::AddPassenger` decrements `UsableSeatNum`, and when it reaches zero it
+  removes the flag itself.** With one seat and a gunner in it the count goes to zero, so
+  the cog cursor goes away as a consequence of seating the Operative. No flag edit is
+  needed at all.
+
+That the cursor appears today is itself the proof that seat 8674 passes
+`CanEnterOrExit()` — the flag is only ever set when the count is above zero. The seat's
+`Flags` in `VehicleSeat.db2` agree, on either of the two readings the collapsed-array
+field mapping allows.
+
+**The gunners inherit emote 214** `EMOTE_STATE_READY_RIFLE` from
+`creature_template_addon` — none of the four has a `creature_addon` row. For a gunner
+that is plausible as it stands, and a seated passenger takes its pose from the seat
+anyway, so leave it until the four have been seen in the seat.
 
 To do:
-- The cannons are scenery that the Sanitron script fires by guid
-  (`cannon->CastSpell(player, SPELL_CANNON_BURST, true)`), so they never need to be
-  clicked. Suppressing the flag is safe.
-- Options, cheapest first: clear `UNIT_NPC_FLAG_SPELLCLICK` from the spawn's `npcflag`;
-  or add `UNIT_FLAG_NOT_SELECTABLE` (0x02000000); or make the seat non-usable so
-  `Vehicle::Install` never sets the flag. Only the last actually addresses the cause,
-  but check it does not break `SPELL_CANNON_BURST`.
-- All four guids: 167786, 167789, 167792, 167922.
+- Seat 167787, 167790, 167793 and 167923 in cannons 167786, 167789, 167792 and 167922.
+- **Confirm the seat index before writing the row.** 8674 is the only seat on the
+  vehicle, but which of `SeatID1`…`SeatID8` holds it decides whether the accessory row
+  says seat 0 or seat 1, and the DB2 reader's field mapping for the collapsed array is
+  off by one — so it cannot be read straight off. `.npc info` on a cannon, or a seat
+  index that simply works in game, settles it.
+- Check `SPELL_CANNON_BURST` still fires. The Sanitron script casts it from the cannon by
+  guid (`cannon->CastSpell(player, SPELL_CANNON_BURST, true)`), and an occupied cannon
+  has a passenger it did not have before.
+- Passenger facing is hardcoded to 0 on seating, so check which way the gunners end up
+  pointing rather than assuming the spawn orientation survives.
+- Leave `unit_flags` 33536 alone unless the cursor is still there after seating.
+
+**This corrects task 3.** That section lists six 45847 spawns with no `creature_addon`
+row and reasons that they "stand at the decontamination stations inside the room", so
+they should probably take 168120's emote 69. Four of those six — 167787, 167790, 167793,
+167923 — are these gunners and are nowhere near the stations. Only **168075**
+(−5187.24, 754.415) and **168133** (−5185.63, 751.724) are actually in the station band
+with 168120. Giving the gunners `EMOTE_STATE_USE_STANDING` would be wrong.
 
 ---
 

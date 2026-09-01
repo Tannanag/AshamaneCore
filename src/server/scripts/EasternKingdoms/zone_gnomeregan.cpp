@@ -68,6 +68,13 @@ enum GnomeMoves
     MOVE_IMUN_AGENT = 4783600
 };
 
+// Unit::SetSpeed takes yards per second, not a rate -- it divides by the base
+// speed itself. Path 4783600 is 201 yards of walkway and its last two points
+// hold the agent for three seconds and then despawn it, so the whole run has to
+// fit inside the summon's 60 second life. At 6.4 the agent is at the Loading
+// Room around 37 seconds in, with the delay counted.
+float const SPEED_IMUN_AGENT = 6.4f;
+
 Position const SpawnPosition = { -4981.25f, 780.992f, 288.485f, 3.316f };
 
 class npc_nevin_twistwrench : public CreatureScript
@@ -105,8 +112,25 @@ public:
         {
             if (TempSummon* agent = player->SummonCreature(NPC_IMUN_AGENT, SpawnPosition, TEMPSUMMON_TIMED_DESPAWN, 60000, 0, true))
             {
-                agent->SetSpeed(MOVE_RUN, 1.0f);
-                agent->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC | UNIT_FLAG_NOT_SELECTABLE);
+                agent->SetSpeed(MOVE_RUN, SPEED_IMUN_AGENT);
+
+                // The summoner link a TempSummon keeps is server-side only, so the
+                // client is told separately who the agent belongs to. Only the creator
+                // field is set: SetOwnerGUID would also feed GetCharmerOrOwner, the
+                // speed floor and attack validity, none of which this agent wants.
+                agent->SetCreatorGUID(player->GetGUID());
+
+                // UNIT_FLAG_PLAYER_CONTROLLED is what makes the name blue. The client
+                // colours a player controlled unit by whether it can be attacked and
+                // whether it is pvp flagged, and lands on blue when it is neither; a
+                // creature without the flag skips all of that and is coloured green by
+                // reaction instead. The agent never joins the player's controlled list,
+                // so Player::SetPvP cannot reach it and the name stays blue even when
+                // the player is flagged.
+                //
+                // Immune, but not hidden from the mouse -- the agent stays clickable
+                // so the player can see whose it is and read its name on the way.
+                agent->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PLAYER_CONTROLLED | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
                 agent->SetReactState(REACT_PASSIVE);
                 agent->AI()->Talk(0, player);
                 agent->GetMotionMaster()->MovePath(MOVE_IMUN_AGENT, false);

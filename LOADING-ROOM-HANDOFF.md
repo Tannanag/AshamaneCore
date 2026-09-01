@@ -1,7 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Seven tasks, none of them started; what is
-done so far is the toolchain and the reconnaissance each one needs.
+Working document for the Loading Room pass. Seven tasks: **task 1 is done and tested in
+game**, task 3 is done for 46267 and untouched for the rest, and the other five are not
+started — each has the reconnaissance it needs written up below.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
 Next free SQL index: `sql/ashamane/world/2026_09_01_01_world.sql`.
@@ -82,12 +83,20 @@ Quests: **27635 Decontamination**, **28169 Withdraw to the Loading Room!**
 
 ## Todo
 
-### 1. Teleporter scene — survivor arrives, assistant shows it a bed  — *done*
+### 1. Teleporter scene — survivor arrives, assistant shows it a bed  — *done, tested in game*
 
-`npc_physicians_assistant_greeter` in `zone_dun_morogh_area_new_tinkertown.cpp`, plus
-`2026_08_31_04_world.sql`. The scene runs unattended on a 61 second cycle and repeated
-five times in the dump, identically each time, which is what made every number below
-readable rather than guessed.
+`npc_physicians_assistant_greeter` in `zone_dun_morogh_area_new_tinkertown.cpp`, with
+`2026_08_31_04_world.sql` and `2026_09_01_00_world.sql`. The scene runs unattended on a
+61 second cycle and repeated five times in the dump, identically each time, which is what
+made every number below readable rather than guessed.
+
+Watched end to end in game and signed off. It took four passes after the first build to
+get there, and each one is written up in place below rather than as a list of fixes:
+the legs would not move at all, the Assistant walked instead of running and cut straight
+through the furniture, nobody turned to face anything when they stopped, and the arrival
+was reworked to coincide with the flash and then put back because retail does not do
+that. The traps behind those are the parts of this section most likely to matter to the
+other six tasks.
 
 The run, timed from the moment the gnome appears:
 

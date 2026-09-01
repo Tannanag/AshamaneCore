@@ -93,7 +93,8 @@ The run, timed from the moment the gnome appears:
 
 | T+ | What happens |
 |---|---|
-| 0.000 | Rescued Survivor summoned on the Gnomeregan Teleporter at (−5161.76, 754.665, 286.039) facing 1.88496, and casts **spell 7791 Teleport** on itself |
+| −0.200 | Rescued Survivor summoned on the Gnomeregan Teleporter at (−5161.76, 754.665, 286.039) facing 1.88496, and immediately concealed |
+| 0.000 | revealed and casts **spell 7791 Teleport** on itself, in that order and in the same tick |
 | 2.067 | plays one of emote **1 Talk / 5 Exclamation / 20 Beg** |
 | 2.167 | says one of its seven lines |
 | 6.889 | steps off the pad to (−5163.96, 759.53) — the Assistant leaves its spot in the same instant, **at a run** |
@@ -111,6 +112,38 @@ dummy with a server-side script; the flash is `SpellXSpellVisualID` **312** and 
 client resolves it alone. No visual kit, no gameobject animation — the teleporter
 itself sends nothing. The cast must not be triggered, or only `SMSG_SPELL_GO` goes out
 and the flash plays across the pair.
+
+**The gnome is summoned hidden and shown at the moment of the flash.** It appeared
+several seconds before the effect otherwise. Two things were behind it, and only the
+first is certain:
+
+- The cast was not triggered, so the spell spent its **one second of cast time** with the
+  gnome already standing there. It is triggered now, which puts `SMSG_SPELL_GO` and its
+  `SpellXSpellVisualID` in the same instant as the create block. Retail gets both packets
+  because it creates the gnome in the same instant it starts casting; the visual is the
+  same either way.
+- Beyond that second, the ordering was not under the script's control at all.
+  `Map::AddToMap` sends a create block for anything it puts in the world — the comment
+  there even says so — and it runs inside `SummonCreature`, before the script gets the
+  pointer back. So the gnome was always shown first and cast at second, with the AI
+  initialisation of a fresh summon in between.
+
+So the gnome is now summoned, concealed in the same breath, and 200ms later revealed and
+cast in one tick. **Reveal first, then cast**: a client that has never been sent the
+gnome has nothing to play a spell on, and a cast that goes out ahead of the create block
+is dropped and the flash simply lost.
+
+Concealing has to go through a `Creature*`. `Map::SummonCreature`'s own
+`visibleBySummonerOnly` argument does nothing to a creature — `TempSummon` redeclares
+`m_visibleBySummonerOnly` and its accessors, shadowing `WorldObject`'s, so the summon
+writes one copy and `CanSeeOrDetect` reads the other. That duplicate must not be
+"fixed"; around fifteen scripts pass `true` there and only still work because it is
+inert. The long version is on `npc_safe_operative_bearer`.
+
+I could not confirm on a running server that the one second was the whole of the delay —
+both the create block and `SMSG_SPELL_START` are sent synchronously, so on paper the
+original should have been tighter than it looked. If a gap survives this, that is where
+to dig.
 
 **The endpoints are furniture, and that is how they were confirmed.** The pad is
 gameobject **156676 Gnomeregan Teleporter**; the seat is **156538 Gnomeregan Mat** at

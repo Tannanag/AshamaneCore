@@ -1,8 +1,11 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Seven tasks: **task 1 is done and tested in
-game**, task 3 is done for 46267 and untouched for the rest, and the other five are not
-started — each has the reconnaissance it needs written up below.
+Working document for the Loading Room pass. Seven tasks. **Task 1 is done** — watched in
+game and signed off. Task 3 has its 46267 half written and applied but **not signed off**,
+and the rest of it is untouched; the other five are not started. Each has the
+reconnaissance it needs written up below.
+
+A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
 Next free SQL index: `sql/ashamane/world/2026_09_01_01_world.sql`.
@@ -282,7 +285,7 @@ To do:
 - Only guid 168990. Do not touch 167810 or 167812 — scope every DB edit to the spawns
   actually named, never to every spawn of the entry.
 
-### 3. Emote state for the other gnomes  — *46267 done, the rest not started*
+### 3. Emote state for the other gnomes  — *46267 written, not signed off; the rest not started*
 
 `EmoteState` reads correctly now, so this can be checked rather than guessed. Observed
 values, keyed by position and matched against the world DB:
@@ -293,7 +296,7 @@ values, keyed by position and matched against the world DB:
 | 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
 | 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value |
 | 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
-| 46267 Rescued Survivor | `EmoteState` 0 throughout; the pose is `StandState` — 8 `KNEEL` or 1 `SIT` | **done**, see below |
+| 46267 Rescued Survivor | `EmoteState` 0 throughout; the pose is `StandState` — 8 `KNEEL` or 1 `SIT` | written and applied, see below |
 
 So most of this is **already right**. The gap is spawns with no `creature_addon` row,
 which silently inherit `creature_template_addon`:
@@ -308,7 +311,9 @@ which silently inherit `creature_template_addon`:
 The dump does not directly show those six, so confirm in game before writing rows for
 them rather than assuming they match 168120.
 
-**46267 Rescued Survivor — done, `2026_08_31_03_world.sql`.** Worth reading before
+**46267 Rescued Survivor — written and applied in `2026_08_31_03_world.sql`, not yet
+checked in game.** `creature_addon` has no `.reload`, so none of it shows until the
+worldserver restarts, which is why it has not been looked at. Worth reading before
 starting the other entries, because the shape of the problem repeats.
 
 These gnomes carry no emote state at all. `EmoteState` is 0 in every one of their

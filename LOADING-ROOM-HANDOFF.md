@@ -4,7 +4,7 @@ Working document for the Loading Room pass. Seven tasks, none of them started; w
 done so far is the toolchain and the reconnaissance each one needs.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_08_31_04_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_08_31_05_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -82,27 +82,74 @@ Quests: **27635 Decontamination**, **28169 Withdraw to the Loading Room!**
 
 ## Todo
 
-### 1. Teleporter scene — survivor arrives, assistant shows it a bed  — *not started*
+### 1. Teleporter scene — survivor arrives, assistant shows it a bed  — *done*
 
-The whole scene is in the dump and decodes cleanly. The Physician's Assistant
-(42552, guid low 26330530) plays **emote 25 OneShotPoint**, then walks; the Rescued
-Survivor (46267, guid low 1450175) follows it. Both move in the box X −5165…−5156,
-Y 754…777, Z 285.6…287.4 — 42 splines for the assistant, 28 for the survivor.
+`npc_physicians_assistant_greeter` in `zone_dun_morogh_area_new_tinkertown.cpp`, plus
+`2026_08_31_04_world.sql`. The scene runs unattended on a 61 second cycle and repeated
+five times in the dump, identically each time, which is what made every number below
+readable rather than guessed.
 
-The survivor's own emotes across the run: emote 1 OneShotTalk, emote 5
-OneShotExclamation, emote 20 OneShotBeg.
+The run, timed from the moment the gnome appears:
 
-To do:
-- Pull the full ordered timeline of the two guids (`wpp_index.py`, below) and turn the
-  leg boundaries into the scene's beats.
-- Find the arrival: look for the cast on 46267 near 20:48:10 and take the teleport
-  visual from `SMSG_SPELL_GO` / `SMSG_SPELL_START`, whose `SpellXSpellVisualID` now
-  reads correctly. The create block in `SMSG_UPDATE_OBJECT` is also readable, so the
-  survivor's spawn state can be checked there directly.
-- Decide summon-vs-spawn. If the survivor has to be assembled before it is seen,
-  conceal it via a `Creature*` so no client ever draws it mid-assembly.
-- The bed hand-off is the same shape as the carry scene already written for 46449 in
-  `zone_dun_morogh_area_new_tinkertown.cpp`; read that first, it may be reusable.
+| T+ | What happens |
+|---|---|
+| 0.000 | Rescued Survivor summoned on the Gnomeregan Teleporter at (−5161.76, 754.665, 286.039) facing 1.88496, and casts **spell 7791 Teleport** on itself |
+| 2.067 | plays one of emote **1 Talk / 5 Exclamation / 20 Beg** |
+| 2.167 | says one of its seven lines |
+| 6.889 | steps off the pad to (−5163.96, 759.53) — the Assistant leaves its spot in the same instant |
+| 10.071 | Assistant reaches (−5163.26, 763.441) and plays **25 OneShotPoint** |
+| 10.229 | Assistant says "Ah, a new arrival. Right this way, sir." |
+| 15.007 | Assistant sets off back, leading; the gnome follows at 15.400 |
+| 22.683 | Assistant reaches its post at (−5161.37, 775.453) and takes **EmoteState 69** |
+| 27.543 | gnome reaches Gnomeregan Mat 156538 and takes **StandState 1 SIT** |
+| 38.471 | Assistant drops the emote state and walks home |
+| 48.591 | gnome despawns |
+| 61.073 | the next one arrives |
+
+**The teleport effect is one spell and nothing else.** 7791 "Teleport" is a one second
+dummy with a server-side script; the flash is `SpellXSpellVisualID` **312** and the
+client resolves it alone. No visual kit, no gameobject animation — the teleporter
+itself sends nothing. The cast must not be triggered, or only `SMSG_SPELL_GO` goes out
+and the flash plays across the pair.
+
+**The endpoints are furniture, and that is how they were confirmed.** The pad is
+gameobject **156676 Gnomeregan Teleporter**; the seat is **156538 Gnomeregan Mat** at
+(−5160.01, 776.535), 0.4 yards from where the gnome stops. The other three mats in the
+room each have a static Survivor on them, which is worth carrying into task 3 — a mat
+is where one of these gnomes belongs.
+
+**Spawns the scene replaced.** Both were static stand-ins for parts of the run:
+
+- **168936** stood on the teleporter, at the arrival position *and facing* to five
+  decimal places. The script reads its numbers.
+- **169002** (42552) stood on a node of the Assistant's own walk back. Only two spawns
+  of 42552 appear anywhere in the dump — 167775, static and correct, and the scene
+  actor — so this one was surplus.
+- **167917** became the scene actor. It was standing on the *post*, the spot the
+  Assistant occupies for 16 seconds mid-scene; it is moved to (−5164.96, 775.741,
+  287.3875) facing 3.06154, which is where the Assistant idles between runs and returns
+  to. The post is a position in the script now.
+
+This is the same pattern as the two Rescued Survivors deleted in task 3: **168909** sat
+exactly on the mat the scene gnome sits on, and **168897** sat 0.2 yards off a node of
+the gnome's walk. Whoever built the room approximated the scene with static NPCs, so
+expect more of them under the other entries.
+
+**Speech.** `creature_text` group 0 on both entries, from `broadcast_text` **46477–46484**
+(that table lives in `ashamane_hotfixes`, not the world DB). Four of the seven arrival
+lines were heard; the other three sit in the same block and are the only ones in it that
+fit. The emote is rolled separately from the line rather than being a property of it —
+three emotes appeared against four texts, and every one of the seven broadcast texts
+carries `EmoteID` 0.
+
+**The gnome has no AI of its own.** The Assistant drives all seven legs. That is why the
+sit is on a timer rather than on the gnome's arrival: its `MovementInform` goes to the
+entry's default AI, not to the script. The walk is a fixed path at walk speed, so the
+two agree.
+
+Not done, and deliberately: the gnome sits facing the way it walked in, because retail
+sends no facing when it stops. If it reads wrong in game the fix is one `SetFacingTo` in
+`ARRIVE_TO_SIT`.
 
 ### 2. Patrol path for the S.A.F.E. Officer  — *not started*
 
@@ -132,7 +179,7 @@ values, keyed by position and matched against the world DB:
 
 | Entry | Observed `EmoteState` | DB state |
 |---|---|---|
-| 42552 Physician's Assistant | 69 `EMOTE_STATE_USE_STANDING` | 167775 and 167917 already carry 69; **169002 has no `creature_addon` row** and falls back to template 0 |
+| 42552 Physician's Assistant | 69 `EMOTE_STATE_USE_STANDING` | 167775 carries 69 and is correct; 167917 is now the task 1 scene actor and takes 69 from the script mid-run; 169002 is deleted |
 | 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
 | 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value |
 | 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
@@ -141,7 +188,8 @@ values, keyed by position and matched against the world DB:
 So most of this is **already right**. The gap is spawns with no `creature_addon` row,
 which silently inherit `creature_template_addon`:
 
-- **42552 guid 169002** — inherits 0 while both its siblings stand at 69.
+- ~~**42552 guid 169002**~~ — deleted by task 1; it was a stand-in for a node of the
+  Assistant's walk, not a spawn that belongs in the room.
 - **45847 guids 167787, 167790, 167793, 167923, 168075, 168133** — inherit 214
   `READY_RIFLE`. 214 is right for the Operatives fighting outside, but these six stand
   at the decontamination stations inside the room, where the one spawn that does have a
@@ -163,7 +211,9 @@ walking, matched a position exactly — 0.000 yards, so the DB coordinates and t
 are the same numbers. **168897** (−5157.85, 764.98) and **168909** (−5159.82, 776.93)
 matched nothing, and both stand on ground the rest of the group covers well: 168909 has
 a confirmed neighbour 4.8 yards away and 168897 one at 2.4. They were extras, and both
-are now deleted. The rows are backed up at
+are now deleted. **Task 1 then explained them**: 168909 sat exactly on the mat the scene
+gnome sits on, and 168897 0.2 yards off a node of its walk. They were static stand-ins
+for a scene, which is a pattern worth expecting under the other entries too. The rows are backed up at
 `/home/serverproject/dumps/rescued_survivor_46267_backup_2rows.sql`, which matters because
 the world DB is MyISAM and the delete does not roll back.
 

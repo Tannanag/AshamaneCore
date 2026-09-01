@@ -96,7 +96,7 @@ The run, timed from the moment the gnome appears:
 | 0.000 | Rescued Survivor summoned on the Gnomeregan Teleporter at (−5161.76, 754.665, 286.039) facing 1.88496, and casts **spell 7791 Teleport** on itself |
 | 2.067 | plays one of emote **1 Talk / 5 Exclamation / 20 Beg** |
 | 2.167 | says one of its seven lines |
-| 6.889 | steps off the pad to (−5163.96, 759.53) — the Assistant leaves its spot in the same instant |
+| 6.889 | steps off the pad to (−5163.96, 759.53) — the Assistant leaves its spot in the same instant, **at a run** |
 | 10.071 | Assistant reaches (−5163.26, 763.441) and plays **25 OneShotPoint** |
 | 10.229 | Assistant says "Ah, a new arrival. Right this way, sir." |
 | 15.007 | Assistant sets off back, leading; the gnome follows at 15.400 |
@@ -142,10 +142,40 @@ fit. The emote is rolled separately from the line rather than being a property o
 three emotes appeared against four texts, and every one of the seven broadcast texts
 carries `EmoteID` 0.
 
-**The gnome has no AI of its own.** The Assistant drives all seven legs. That is why the
-sit is on a timer rather than on the gnome's arrival: its `MovementInform` goes to the
-entry's default AI, not to the script. The walk is a fixed path at walk speed, so the
-two agree.
+**One leg is run and the rest are walked.** The Assistant's dash over to a new arrival
+is the only one: 23.1 yards travelled in 2882ms, **8.01 yards a second**. Every other
+leg in the scene, both actors, comes out at 2.5 — walk speed. `speed_walk` 1 and
+`speed_run` 1.14286 on both templates already give exactly those two numbers, so no
+speed is set anywhere in the script; the only thing that has to be right is which legs
+call `SetWalk(false)`.
+
+The parser hands you this directly — `Computed Distance` and `Computed Speed` at the
+foot of every `SMSG_ON_MONSTER_MOVE`. Do not compute speed from the straight line
+between the endpoints: the room has a table and four chairs in the middle of it and the
+scene walks around them, so the run over is 12.4 yards apart and 23.1 travelled, and the
+gnome's second leg 8.4 against 16.5. Those bends are the pathfinder's, which is why
+every leg here is a `MovePoint` with `generatePath` on rather than a written-out route.
+
+**`MoveSmoothPath` cannot express a single leg**, and this cost a round trip.
+`MoveSplineInit::Launch` overwrites `args.path[0]` with the mover's real position, so a
+one-node path has its only destination eaten and the creature stands still while the
+rest of the scene carries on around it — which looked exactly like "the Assistant is not
+running over before it speaks". A multi-node path silently loses its first leg the same
+way. The existing carry scene gets this right by making element 0 the start position,
+and its comment says so; it is easy to read past. `MovePoint` has no such trap.
+
+`SetWalk` does work with `MovePoint`, despite what the carry scene's comment says:
+`MoveSplineInit`'s constructor seeds `args.walk` from `MOVEMENTFLAG_WALKING`, so setting
+it on the unit before the generator builds the spline takes effect. What is true is that
+`PointMovementGenerator` never calls `SetWalk` itself, so a `MovePoint` on a creature
+that is not already walking runs.
+
+**The gnome has no AI of its own.** The Assistant drives every leg of it. Its
+`MovementInform` goes to the entry's default AI and not to the script, which is one
+reason the scene is timed rather than chained off arrivals — the other being that this
+is how it actually runs. Legs go out on the clock while the previous one is still
+moving, redirecting the walker from wherever it has got to. Only the Assistant's walk
+home is answered on arrival, so its facing can be put back once it is standing there.
 
 Not done, and deliberately: the gnome sits facing the way it walked in, because retail
 sends no facing when it stops. If it reads wrong in game the fix is one `SetFacingTo` in

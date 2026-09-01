@@ -874,12 +874,6 @@ static constexpr Emote ARRIVAL_EMOTES[] =
 // Every beat of the run, measured from the moment the gnome appears. The cycle comes to
 // about 61 seconds and repeats unattended. These are the intervals the scene was built
 // on rather than values chosen to taste: it ran five times in a row to the same clock.
-// The gnome is summoned this long before it is shown, and spends the gap concealed.
-// Map::AddToMap sends a create block for anything it puts in the world, so a summon is
-// briefly visible before the script can hide it; this gap is what keeps that create and
-// the one that matters from landing in the same instant.
-static constexpr Milliseconds SUMMON_TO_ARRIVE  = Milliseconds(200);
-
 static constexpr Milliseconds ARRIVE_TO_EMOTE   = Milliseconds(2067);
 static constexpr Milliseconds ARRIVE_TO_SAY     = Milliseconds(2167);
 static constexpr Milliseconds ARRIVE_TO_SET_OFF = Milliseconds(6889);
@@ -1014,25 +1008,6 @@ static void WalkRoute(Unit* mover, uint32 pointId, Position const* route, size_t
     mover->GetMotionMaster()->MoveSmoothPath(pointId, route, count, true);
 }
 
-// Hidden after the fact rather than summoned hidden. Map::SummonCreature takes a
-// visibleBySummonerOnly argument, and it does nothing to a creature: TempSummon
-// redeclares m_visibleBySummonerOnly and its accessors, shadowing WorldObject's, so
-// Map::SummonCreature writes the TempSummon copy while WorldObject::CanSeeOrDetect reads
-// the WorldObject one. Going through a Creature*, as these do, resolves to WorldObject's
-// setter and does hide it. The long version of this is on npc_safe_operative_bearer
-// above, including why the duplicate must not be deleted.
-static void Conceal(Creature* gnome)
-{
-    gnome->SetVisibleBySummonerOnly(true);
-    gnome->UpdateObjectVisibility();
-}
-
-static void Reveal(Creature* gnome)
-{
-    gnome->SetVisibleBySummonerOnly(false);
-    gnome->UpdateObjectVisibility();
-}
-
 // The Physician's Assistant beside the Gnomeregan Teleporter, creature guid 167917.
 // Every minute a rescued gnome is teleported in; the Assistant hurries over, points it
 // towards a mat, leads it there, stands over it while it rests, and goes back to its own
@@ -1139,51 +1114,31 @@ private:
 
     void SummonArrival()
     {
+        // Nothing is concealed here, deliberately. Retail creates the gnome and starts
+        // the cast in the same instant -- the create block and SMSG_SPELL_START share a
+        // timestamp -- and the flash lands with SMSG_SPELL_GO 0.8 seconds later, so the
+        // gnome is briefly standing there before the effect goes off. That has been
+        // checked in game on retail and it is what it does.
+        //
+        // Summoning it hidden and revealing it on the flash was tried and reverted. It
+        // is a tighter effect and it is not this one. If it comes up again, the reason
+        // it is not done is that it looks less like retail, not that it does not work.
         TempSummon* arrival = me->SummonCreature(NPC_RESCUED_SURVIVOR, TeleporterPad, TEMPSUMMON_MANUAL_DESPAWN);
         if (!arrival)
             return;
 
         _arrival = arrival->GetGUID();
 
-        // Out of sight straight away. Everything the gnome needs is already settled by
-        // this point -- 46267 carries four models in creature_template and the summon
-        // picks one the same way any spawn of the entry does -- so the concealed gap is
-        // not for assembling it, only for keeping the create block that AddToMap has
-        // just sent away from the one the scene wants clients to see.
-        Conceal(arrival);
+        // Not triggered, so the cast runs its one second and the client is sent
+        // SMSG_SPELL_START and then SMSG_SPELL_GO, which is the pair retail sends. A
+        // triggered cast collapses that into the second one and the flash arrives with
+        // the gnome instead of shortly after it -- which is the wrong timing here, even
+        // though it is the neater one.
+        arrival->CastSpell(arrival, SPELL_TELEPORT, false);
 
-        _scheduler.Schedule(SUMMON_TO_ARRIVE, [this](TaskContext /*task*/)
-        {
-            RevealArrival();
-        });
-    }
+        // 46267 carries four gnome models in creature_template and the summon picks one
+        // at random the same way any spawn of the entry does. Nothing here chooses it.
 
-    // The gnome appears and the flash goes off together, which is the whole point of
-    // summoning it hidden.
-    void RevealArrival()
-    {
-        Creature* arrival = GetArrival();
-        if (!arrival)
-            return;
-
-        // Shown first and cast second, in that order and in the same tick. A client that
-        // has never been sent the gnome has nothing to play a spell on, so a cast that
-        // goes out ahead of the create block is dropped and the flash is simply lost.
-        Reveal(arrival);
-
-        // Triggered, so the client is sent SMSG_SPELL_GO at once. Cast the ordinary way
-        // the spell takes its one second first, and the gnome stands there through all
-        // of it before anything happens -- which is the gap this whole arrangement
-        // exists to close. Retail sends SMSG_SPELL_START as well and gets both, having
-        // created the gnome in the same instant it began casting; the visual is the same
-        // SpellXSpellVisualID either way.
-        arrival->CastSpell(arrival, SPELL_TELEPORT, true);
-
-        ScheduleArrivalRun();
-    }
-
-    void ScheduleArrivalRun()
-    {
         _scheduler.Schedule(ARRIVE_TO_EMOTE, [this](TaskContext /*task*/)
         {
             if (Creature* arrival = GetArrival())

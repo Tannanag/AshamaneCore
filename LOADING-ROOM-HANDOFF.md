@@ -143,32 +143,50 @@ three emotes appeared against four texts, and every one of the seven broadcast t
 carries `EmoteID` 0.
 
 **One leg is run and the rest are walked.** The Assistant's dash over to a new arrival
-is the only one: 23.1 yards travelled in 2882ms, **8.01 yards a second**. Every other
+is the only one: 21.9 yards travelled in 2882ms, **8.01 yards a second**. Every other
 leg in the scene, both actors, comes out at 2.5 — walk speed. `speed_walk` 1 and
 `speed_run` 1.14286 on both templates already give exactly those two numbers, so no
-speed is set anywhere in the script; the only thing that has to be right is which legs
-call `SetWalk(false)`.
+speed is set anywhere in the script.
 
-The parser hands you this directly — `Computed Distance` and `Computed Speed` at the
-foot of every `SMSG_ON_MONSTER_MOVE`. Do not compute speed from the straight line
-between the endpoints: the room has a table and four chairs in the middle of it and the
-scene walks around them, so the run over is 12.4 yards apart and 23.1 travelled, and the
-gnome's second leg 8.4 against 16.5. Those bends are the pathfinder's, which is why
-every leg here is a `MovePoint` with `generatePath` on rather than a written-out route.
+The parser hands you the speed directly — `Computed Distance` and `Computed Speed` at
+the foot of every `SMSG_ON_MONSTER_MOVE`. Never compute it from the straight line
+between the endpoints.
 
-**`MoveSmoothPath` cannot express a single leg**, and this cost a round trip.
-`MoveSplineInit::Launch` overwrites `args.path[0]` with the mover's real position, so a
-one-node path has its only destination eaten and the creature stands still while the
-rest of the scene carries on around it — which looked exactly like "the Assistant is not
-running over before it speaks". A multi-node path silently loses its first leg the same
-way. The existing carry scene gets this right by making element 0 the start position,
-and its comment says so; it is easy to read past. `MovePoint` has no such trap.
+**Every route is written out, and pathfinding is not used.** There is a table and four
+chairs standing between the Assistant's spot and the teleporter, and the scene walks
+around them: the run over is 12.4 yards apart and 21.9 travelled. Asking
+`MovePoint(…, generatePath = true)` for that leg gets a straight line through the
+table — **none of that furniture is in the navmesh**, which is built from terrain and
+statics and knows nothing about gameobject spawns. So the nodes come out of the sniff
+instead, thinned to about a yard apart.
 
-`SetWalk` does work with `MovePoint`, despite what the carry scene's comment says:
-`MoveSplineInit`'s constructor seeds `args.walk` from `MOVEMENTFLAG_WALKING`, so setting
-it on the unit before the generator builds the spline takes effect. What is true is that
-`PointMovementGenerator` never calls `SetWalk` itself, so a `MovePoint` on a creature
-that is not already walking runs.
+The waypoints are in each `SMSG_ON_MONSTER_MOVE` as `WayPoints`, separate from `Points`,
+which holds only the destination. Two things to know when reading them back:
+
+- **Legs overlap.** Most are issued while the previous one is still running and simply
+  redirect the walker from wherever it has got to, so the tail of each leg's route was
+  never walked. Keep only the part before the next leg's start position; concatenating
+  whole legs double-counts and gives a route that doubles back.
+- **Some of it is pathfinder noise worth dropping.** The gnome's second leg goes 4 yards
+  north to y 767.5 and straight back south to 763.5 before carrying on. That is real —
+  it is why the leg took 12.1s rather than the 8.8 the distance implies — but it is a
+  navmesh artefact rather than anything the scene wants, and the overlap rule above
+  removes it. The gnome now reaches the mat about 3.4s before it is due to sit, and
+  stands there in the meantime.
+
+**The way out and the way back are the same corridor.** Retail sends the way out as one
+spline and the way back as four, but the four trace the outbound route to within a yard
+the whole way. The script therefore holds **one** `AssistantRoute` array and walks it
+backwards on the return, stopping at the post rather than carrying on to the idle spot —
+so the two directions cannot drift apart. Checked against the sniffed return leg by leg
+before being collapsed that way. The lengths confirm it: 19.1 yards at walk speed is
+7.66s against retail's 7.68.
+
+**`MoveSmoothPath` overwrites element 0** with the mover's real position
+(`MoveSplineInit::Launch`), so the first entry of every route array is the point the
+mover is standing on when the leg goes out, never a destination. A one-node path has its
+only destination eaten and moves nobody, which is the failure that first showed up as
+"the Assistant points and speaks without walking over".
 
 **The gnome has no AI of its own.** The Assistant drives every leg of it. Its
 `MovementInform` goes to the entry's default AI and not to the script, which is one

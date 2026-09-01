@@ -874,6 +874,8 @@ static constexpr Milliseconds ARRIVE_TO_SAY     = Milliseconds(2167);
 static constexpr Milliseconds ARRIVE_TO_SET_OFF = Milliseconds(6889);
 static constexpr Milliseconds ARRIVE_TO_POINT   = Milliseconds(10071);
 static constexpr Milliseconds ARRIVE_TO_GREET   = Milliseconds(10229);
+static constexpr Milliseconds ARRIVE_TO_LEAD    = Milliseconds(15007);
+static constexpr Milliseconds ARRIVE_TO_FOLLOW  = Milliseconds(15400);
 static constexpr Milliseconds ARRIVE_TO_POST    = Milliseconds(22683);
 static constexpr Milliseconds ARRIVE_TO_SIT     = Milliseconds(27543);
 static constexpr Milliseconds ARRIVE_TO_GO_HOME = Milliseconds(38471);
@@ -886,66 +888,95 @@ static constexpr Milliseconds CYCLE             = Milliseconds(61073);
 // scene replaces.
 Position const TeleporterPad = { -5161.76f, 754.665f, 286.039f, 1.88496f };
 
-// The gnome's walk, ending on Gnomeregan Mat 156538 at (-5160.01, 776.535). It steps
-// off the pad onto the first node and waits there to be greeted. No facing is sent when
-// it stops, so it sits looking the way it was walking, and nothing here sets one.
-Position const ArrivalWalk[] =
-{
-    { -5163.960f, 759.533f, 285.591f },
-    { -5157.670f, 765.050f, 287.203f },
-    { -5156.110f, 767.950f, 287.388f },
-    { -5158.270f, 773.444f, 287.388f },
-    { -5159.820f, 776.925f, 287.388f }
-};
-
-// When each of those legs goes out. A leg is issued on the clock and not on arriving at
-// the one before it, which is what retail does -- most of them are sent while the
-// previous leg is still running and simply redirect the gnome from wherever it has got
-// to.
-static constexpr Milliseconds ArrivalWalkAt[] =
-{
-    Milliseconds(6889), Milliseconds(15400), Milliseconds(20630),
-    Milliseconds(21878), Milliseconds(24305)
-};
-
-// Where the Assistant meets the gnome, a few yards off the pad.
-Position const AssistantMeetPosition = { -5163.260f, 763.441f, 285.591f };
-
-// The way back. The Assistant leads rather than follows, setting off first and reaching
-// its post beside the mat while the gnome is still walking. The last node is the post.
-Position const AssistantWalkBack[] =
-{
-    { -5157.010f, 767.049f, 287.388f },
-    { -5156.370f, 770.106f, 287.388f },
-    { -5159.410f, 773.753f, 287.388f },
-    { -5161.370f, 775.453f, 287.388f }
-};
-
-static constexpr Milliseconds AssistantWalkBackAt[] =
-{
-    Milliseconds(15007), Milliseconds(16600), Milliseconds(19027), Milliseconds(20246)
-};
-
-// Every leg is a MovePoint with pathfinding on, rather than a straight line or a
-// MoveSmoothPath.
+// Every route below is written out rather than left to pathfinding.
 //
-// Pathfinding because the room has a table and four chairs standing between the
-// Assistant's spot and the teleporter, and the scene walks around them. The run over to
-// a new arrival covers 12.4 yards in a straight line and 23.1 yards as travelled, and
-// the gnome's second leg 8.4 against 16.5. Those bends are the pathfinder's, so the way
-// to get them is to ask the pathfinder rather than to write them out by hand.
+// The room has a table and four chairs standing between the Assistant's spot and the
+// teleporter, and the scene walks around them -- the run over covers 12.4 yards in a
+// straight line and 21.9 as travelled. None of that furniture is in the navmesh, which
+// is built from terrain and statics and knows nothing about gameobject spawns, so
+// asking the pathfinder for these legs gets a straight line through the table. The
+// nodes here are the route itself, thinned to about a yard apart.
 //
-// Not MoveSmoothPath, which cannot express a single leg at all: MoveSplineInit::Launch
-// overwrites path element 0 with the mover's real position, so a one-node path has its
-// only destination eaten and the creature stands where it is. That is what kept the
-// Assistant from ever walking over to the gnome it was pointing at.
-static void MoveLeg(Unit* mover, uint32 pointId, Position const& destination, bool walk)
+// Element 0 of a MoveSmoothPath array is never a destination: MoveSplineInit::Launch
+// overwrites it with the mover's real position. Each of these therefore begins at the
+// point the mover is standing on when the leg goes out, which is what that element
+// records.
+
+// The Assistant's route, out and back. Retail sends the way out as one spline and the
+// way back as four, but the four trace this same corridor to within a yard the whole
+// way, so it is one route used in both directions and the two cannot drift apart.
+Position const AssistantRoute[] =
+{
+    { -5164.960f,  775.741f,  287.387f },
+    { -5161.360f,  774.341f,  287.489f },
+    { -5157.610f,  772.341f,  287.489f },
+    { -5157.110f,  771.091f,  287.489f },
+    { -5155.610f,  769.091f,  287.489f },
+    { -5155.860f,  767.841f,  287.489f },
+    { -5157.360f,  766.591f,  287.489f },
+    { -5158.360f,  766.091f,  286.989f },
+    { -5159.110f,  765.591f,  286.489f },
+    { -5160.360f,  765.091f,  285.989f },
+    { -5161.860f,  764.341f,  285.989f },
+    { -5163.260f,  763.441f,  285.591f }
+};
+
+// Where the Assistant stands over the gnome once it is on the mat. It sits a yard off
+// the second node of the route above, so the walk back stops here instead of carrying
+// on to the spot it idles at.
+Position const AssistantPost = { -5161.370f, 775.453f, 287.387f };
+
+// The gnome steps off the pad onto the last of these and waits there to be greeted.
+Position const ArrivalStepOff[] =
+{
+    { -5161.760f,  754.665f,  286.039f },
+    { -5162.359f,  756.349f,  285.815f },
+    { -5163.959f,  759.533f,  285.591f }
+};
+
+// The rest of its walk, ending on Gnomeregan Mat 156538 at (-5160.01, 776.535). No
+// facing is sent when it stops, so it sits looking the way it was walking, and nothing
+// here sets one.
+Position const ArrivalWalkToMat[] =
+{
+    { -5163.959f,  759.533f,  285.591f },
+    { -5160.315f,  763.541f,  285.897f },
+    { -5159.631f,  764.028f,  286.306f },
+    { -5158.881f,  764.528f,  286.556f },
+    { -5158.032f,  764.839f,  287.158f },
+    { -5157.401f,  765.642f,  287.273f },
+    { -5156.151f,  768.142f,  287.523f },
+    { -5155.651f,  768.892f,  287.523f },
+    { -5156.277f,  769.899f,  287.387f },
+    { -5156.798f,  771.162f,  287.637f },
+    { -5157.298f,  771.912f,  287.637f },
+    { -5158.048f,  773.412f,  287.637f },
+    { -5159.298f,  776.412f,  287.637f },
+    { -5159.820f,  776.925f,  287.387f }
+};
+
+// The way back: the route above walked backwards, stopping at the post.
+static std::vector<Position> AssistantRouteBack()
+{
+    std::vector<Position> route;
+    route.reserve(std::extent<decltype(AssistantRoute)>::value);
+    for (size_t i = std::extent<decltype(AssistantRoute)>::value; i-- > 0; )
+        route.push_back(AssistantRoute[i]);
+
+    route.back() = AssistantPost;
+    return route;
+}
+
+// Walk a written-out route. MoveSmoothPath sends it as one spline, which is how retail
+// sends the way out; the way back arrives there as four splines, but each is issued
+// while the one before it is still running, so what is walked is one continuous line
+// either way.
+static void WalkRoute(Unit* mover, Position const* route, size_t count)
 {
     // MoveSplineInit reads args.walk off MOVEMENTFLAG_WALKING in its constructor, so
-    // this has to be set before the generator builds the spline. PointMovementGenerator
-    // never calls SetWalk itself, which is why a MovePoint otherwise always runs.
-    mover->SetWalk(walk);
-    mover->GetMotionMaster()->MovePoint(pointId, destination, true);
+    // this has to be set before the generator builds the spline.
+    mover->SetWalk(true);
+    mover->GetMotionMaster()->MoveSmoothPath(POINT_LEG, route, count, true);
 }
 
 // The Physician's Assistant beside the Gnomeregan Teleporter, creature guid 167917.
@@ -998,9 +1029,9 @@ struct npc_physicians_assistant_greeter : public ScriptedAI
 
     void MovementInform(uint32 type, uint32 id) override
     {
-        // MovePoint finishes through PointMovementGenerator, so arrivals come back as
-        // POINT_MOTION_TYPE and not the EFFECT_MOTION_TYPE a MoveSmoothPath would give.
-        if (type == POINT_MOTION_TYPE && id == POINT_ASSISTANT_HOME)
+        // MoveSmoothPath finishes through EffectMovementGenerator, so arrivals come back
+        // as EFFECT_MOTION_TYPE and not the POINT_MOTION_TYPE a MovePoint would give.
+        if (type == EFFECT_MOTION_TYPE && id == POINT_ASSISTANT_HOME)
             me->SetFacingTo(me->GetHomePosition().GetOrientation());
     }
 
@@ -1054,22 +1085,20 @@ private:
                 arrival->AI()->Talk(SAY_ARRIVAL);
         });
 
-        for (size_t leg = 0; leg < std::extent<decltype(ArrivalWalk)>::value; ++leg)
-        {
-            _scheduler.Schedule(ArrivalWalkAt[leg], [this, leg](TaskContext /*task*/)
-            {
-                if (Creature* arrival = GetArrival())
-                    MoveLeg(arrival, POINT_LEG, ArrivalWalk[leg], true);
-            });
-        }
-
         _scheduler.Schedule(ARRIVE_TO_SET_OFF, [this](TaskContext /*task*/)
         {
+            // The gnome steps off the pad and the Assistant leaves its spot in the same
+            // instant, so that the two meet.
+            if (Creature* arrival = GetArrival())
+                WalkRoute(arrival, ArrivalStepOff, std::extent<decltype(ArrivalStepOff)>::value);
+
             // The one leg in the scene that is run rather than walked: the Assistant
-            // hurries over to a gnome that has just appeared, 23 yards in 2.9 seconds.
+            // hurries over to a gnome that has just appeared, 21.9 yards in 2.9 seconds.
             // That is 8 yards a second, which is what creature_template.speed_run
             // 1.14286 already gives it, so no speed is set here.
-            MoveLeg(me, POINT_LEG, AssistantMeetPosition, false);
+            me->SetWalk(false);
+            me->GetMotionMaster()->MoveSmoothPath(POINT_LEG, AssistantRoute,
+                std::extent<decltype(AssistantRoute)>::value, false);
         });
 
         _scheduler.Schedule(ARRIVE_TO_POINT, [this](TaskContext /*task*/)
@@ -1086,13 +1115,20 @@ private:
                 Talk(SAY_GREETING);
         });
 
-        for (size_t leg = 0; leg < std::extent<decltype(AssistantWalkBack)>::value; ++leg)
+        _scheduler.Schedule(ARRIVE_TO_LEAD, [this](TaskContext /*task*/)
         {
-            _scheduler.Schedule(AssistantWalkBackAt[leg], [this, leg](TaskContext /*task*/)
-            {
-                MoveLeg(me, POINT_LEG, AssistantWalkBack[leg], true);
-            });
-        }
+            // Back down the same corridor, on foot this time, stopping at the post. It
+            // leads rather than follows: it sets off first and is standing over the mat
+            // before the gnome gets there.
+            std::vector<Position> const route = AssistantRouteBack();
+            WalkRoute(me, route.data(), route.size());
+        });
+
+        _scheduler.Schedule(ARRIVE_TO_FOLLOW, [this](TaskContext /*task*/)
+        {
+            if (Creature* arrival = GetArrival())
+                WalkRoute(arrival, ArrivalWalkToMat, std::extent<decltype(ArrivalWalkToMat)>::value);
+        });
 
         _scheduler.Schedule(ARRIVE_TO_POST, [this](TaskContext /*task*/)
         {
@@ -1110,9 +1146,13 @@ private:
         {
             me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE);
 
-            // The home position rather than a written-out node, so that moving the spawn
-            // in the database moves the end of the walk with it.
-            MoveLeg(me, POINT_ASSISTANT_HOME, me->GetHomePosition(), true);
+            // Straight back to the spot it idles at -- retail sends this last leg with
+            // no intermediate nodes at all, so there is no corner to go round. The home
+            // position rather than a written-out node, so that moving the spawn in the
+            // database moves the end of the walk with it.
+            Position const home[] = { me->GetPosition(), me->GetHomePosition() };
+            me->SetWalk(true);
+            me->GetMotionMaster()->MoveSmoothPath(POINT_ASSISTANT_HOME, home, 2, true);
         });
 
         _scheduler.Schedule(ARRIVE_TO_DESPAWN, [this](TaskContext /*task*/)

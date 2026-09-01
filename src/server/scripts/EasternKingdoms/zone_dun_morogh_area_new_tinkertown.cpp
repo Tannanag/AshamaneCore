@@ -21,6 +21,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
+#include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
@@ -955,6 +956,16 @@ Position const ArrivalWalkToMat[] =
     { -5159.820f,  776.925f,  287.387f }
 };
 
+// The last node of that walk is the mat itself, which is what the gnome is sat down on.
+static Position const& ArrivalMat()
+{
+    return ArrivalWalkToMat[std::extent<decltype(ArrivalWalkToMat)>::value - 1];
+}
+
+// How close to the mat counts as having got there. The walk ends on it, so this only has
+// to be wide enough to cover a spline stopping a little short.
+static constexpr float MAT_ARRIVAL_TOLERANCE = 3.0f;
+
 // The way back: the route above walked backwards, stopping at the post.
 static std::vector<Position> AssistantRouteBack()
 {
@@ -1038,8 +1049,28 @@ struct npc_physicians_assistant_greeter : public ScriptedAI
     void UpdateAI(uint32 diff) override
     {
         // No UpdateVictim, and nothing that could acquire one. The scheduler is the
-        // whole AI.
+        // rest of the AI.
         _scheduler.Update(diff);
+
+        // The gnome sits down when it gets to the mat rather than when the clock says it
+        // should. It is a summon carrying the entry's default AI, so its MovementInform
+        // goes there and never reaches this script -- watching its spline is the way to
+        // hear about the arrival from outside it. The scheduler is updated first, so a
+        // leg issued this tick has already been launched and cannot read as finished.
+        if (!_seating)
+            return;
+
+        Creature* arrival = GetArrival();
+        if (!arrival)
+        {
+            _seating = false;
+            return;
+        }
+
+        if (!arrival->movespline->Finalized() || arrival->GetExactDist(&ArrivalMat()) > MAT_ARRIVAL_TOLERANCE)
+            return;
+
+        SeatArrival();
     }
 
 private:
@@ -1127,7 +1158,10 @@ private:
         _scheduler.Schedule(ARRIVE_TO_FOLLOW, [this](TaskContext /*task*/)
         {
             if (Creature* arrival = GetArrival())
+            {
                 WalkRoute(arrival, ArrivalWalkToMat, std::extent<decltype(ArrivalWalkToMat)>::value);
+                _seating = true;
+            }
         });
 
         _scheduler.Schedule(ARRIVE_TO_POST, [this](TaskContext /*task*/)
@@ -1138,8 +1172,13 @@ private:
 
         _scheduler.Schedule(ARRIVE_TO_SIT, [this](TaskContext /*task*/)
         {
-            if (Creature* arrival = GetArrival())
-                arrival->SetStandState(UNIT_STAND_STATE_SIT);
+            // A backstop, and normally already spent: the gnome sits the moment it
+            // reaches the mat, which on this route is a few seconds before this fires.
+            // This is only what catches a walk that never arrives -- something in the
+            // way, a spline that failed to launch -- so that it is sitting by the time
+            // the Assistant is standing over it either way.
+            if (_seating)
+                SeatArrival();
         });
 
         _scheduler.Schedule(ARRIVE_TO_GO_HOME, [this](TaskContext /*task*/)
@@ -1161,6 +1200,14 @@ private:
         });
     }
 
+    void SeatArrival()
+    {
+        _seating = false;
+
+        if (Creature* arrival = GetArrival())
+            arrival->SetStandState(UNIT_STAND_STATE_SIT);
+    }
+
     Creature* GetArrival()
     {
         return ObjectAccessor::GetCreature(*me, _arrival);
@@ -1172,9 +1219,11 @@ private:
             arrival->DespawnOrUnsummon();
 
         _arrival.Clear();
+        _seating = false;
     }
 
     ObjectGuid _arrival;
+    bool _seating = false;
     TaskScheduler _scheduler;
 };
 

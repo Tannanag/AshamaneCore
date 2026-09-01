@@ -101,7 +101,7 @@ The run, timed from the moment the gnome appears:
 | 10.229 | Assistant says "Ah, a new arrival. Right this way, sir." |
 | 15.007 | Assistant sets off back, leading; the gnome follows at 15.400 |
 | 22.683 | Assistant reaches its post at (−5161.37, 775.453) and takes **EmoteState 69** |
-| 27.543 | gnome reaches Gnomeregan Mat 156538 and takes **StandState 1 SIT** |
+| 27.543 | gnome reaches Gnomeregan Mat 156538 and takes **StandState 1 SIT** (the script sits it on arrival, which is a little earlier) |
 | 38.471 | Assistant drops the emote state and walks home |
 | 48.591 | gnome despawns |
 | 61.073 | the next one arrives |
@@ -171,8 +171,8 @@ which holds only the destination. Two things to know when reading them back:
   north to y 767.5 and straight back south to 763.5 before carrying on. That is real —
   it is why the leg took 12.1s rather than the 8.8 the distance implies — but it is a
   navmesh artefact rather than anything the scene wants, and the overlap rule above
-  removes it. The gnome now reaches the mat about 3.4s before it is due to sit, and
-  stands there in the meantime.
+  removes it. It also means the gnome reaches the mat about 3.4s earlier than retail's
+  clock says, which is why the sit is driven by arriving rather than by the clock.
 
 **The way out and the way back are the same corridor.** Retail sends the way out as one
 spline and the way back as four, but the four trace the outbound route to within a yard
@@ -187,6 +187,15 @@ before being collapsed that way. The lengths confirm it: 19.1 yards at walk spee
 mover is standing on when the leg goes out, never a destination. A one-node path has its
 only destination eaten and moves nobody, which is the failure that first showed up as
 "the Assistant points and speaks without walking over".
+
+**The gnome sits when it reaches the mat, not when the clock says so.** It is a summon
+carrying the entry's default AI, so its `MovementInform` goes there and never reaches the
+script. The way to hear about its arrival from outside it is to watch
+`movespline->Finalized()` in the Assistant's `UpdateAI` — the scheduler is updated first
+in that method, so a leg issued on the same tick has already been launched and cannot
+read as finished. A distance check against the mat goes with it, so a spline that fails
+to launch cannot be mistaken for an arrival. `ARRIVE_TO_SIT` is still there as a backstop
+for a walk that never arrives at all, and is normally already spent by the time it fires.
 
 **The gnome has no AI of its own.** The Assistant drives every leg of it. Its
 `MovementInform` goes to the entry's default AI and not to the script, which is one

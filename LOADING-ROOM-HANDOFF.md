@@ -11,60 +11,42 @@ Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-lo
 
 ---
 
-## Toolchain — WowPacketParser now reads this build
+## Toolchain — WowPacketParser
 
-This was the blocker and it is cleared. Re-parse with:
+**Plain upstream WowPacketParser reads this build. No local patches are needed.**
+
+The clone at `/home/serverproject/WowPacketParser` had been sitting on an old commit
+with hand-added build numbers. Upstream had already done all of the 12.1 work properly —
+`Add build 12.1.0.69465 and 12.1.0.69497`, `Support 12.1.0` (which fills in the opcode
+table), `Fix a bunch of wrong ResetBitReader placements`, and the hotfix and update-field
+updates. Pulling replaced every local change:
+
+    cd /home/serverproject/WowPacketParser
+    git pull --ff-only
+    /home/serverproject/.dotnet/dotnet build WowPacketParser.slnx -c Release
+
+Then parse:
 
     cd /home/serverproject/dumps
     /home/serverproject/.dotnet/dotnet \
       /home/serverproject/WowPacketParser/WowPacketParser/bin/Release/WowPacketParser.dll \
       dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt
 
-Four changes, all uncommitted in `/home/serverproject/WowPacketParser` (that clone
-already carried uncommitted build additions for 69382/69404/69465; these sit on top):
+**96.3% of packets parse with 0 errors.** The remaining 3.7% are opcodes with no handler
+written for them at all, which is not the same as a failure. Working tree is clean at
+upstream `b8531d901`.
 
-1. **Build 69497 registered** in `ClientVersionBuild.cs`, `Opcodes.cs`,
-   `UpdateFields.cs` and `ClientVersion.cs`, following the pattern the earlier builds
-   use.
+**If a future dump parses badly, pull before doing anything else.** A stale clone shows
+up as either raw hex with numeric opcodes and no names, or as named opcodes whose fields
+read as garbage — positions around 1e-37, a flags field holding an object's own guid.
+Both mean the checkout is behind, not that the dump is bad.
 
-2. **The 12.1.0 opcode table was an empty stub.** `Enums/Version/V12_1_0_69214/Opcodes.cs`
-   came from upstream's "Init 12.1.0" commit with both dictionaries declared and left
-   empty, so every packet in every 12.1 dump printed as raw hex with a numeric opcode
-   and no name — 0 of 65,404 named in the earlier 69465 parse. It is now generated from
-   TrinityCore master's `src/server/game/Server/Protocol/Opcodes.h`, which is at
-   12.1.0.69497 exactly. 2,404 of 2,431 opcodes; the 27 skipped are Discord, Housing and
-   LFG-list names that have no entry in WPP's own `Opcode` enum.
-   Generator kept at `/home/serverproject/.claude/jobs/6f4bdc96/tmp/genop.py`.
-
-3. **`SMSG_ON_MONSTER_MOVE` was misread.** Two fields moved in 12.0 and the V11 reader
-   desynced on both, reporting positions in the 1e-37 range before running off the end
-   of the packet:
-   - `MonsterMove::Write` is `MoverGUID`, `SplineData`, `Pos` — `Pos` used to be second
-     and is now written **last**.
-   - `MovementMonsterSpline` is `ID`, `Move`, then the CrzTeleport /
-     StopUseFaceDirection / StopSplineStyle bits — that bit block used to **precede**
-     the spline.
-
-   A 12.x reader now lives at
-   `WowPacketParserModule.V12_0_0_65390/Parsers/MovementHandler.cs`. Because `Pos` is
-   read last and the packed deltas are stored relative to the midpoint between `Pos` and
-   the first spline point, the deltas are held packed until `Pos` is known. It also
-   takes the optional spline filter *after* the point arrays, where 12.1 writes it.
-
-   Handler resolution: 69497's `VersionDefiningBuild` is `V12_0_0_65390`, so the loader
-   picks this module ahead of the V11 fallback.
-
-**Result: 76.2% of packets parse, up from 65.3% named / 0% before.** All 2,227
-monster-move packets now decode to real coordinates.
-
-### Still broken — `SMSG_UPDATE_OBJECT`
-
-Object updates remain desynced for 12.1: the create block reads `Position` as garbage
-and `MovementFlags2` comes back holding the object's own guid low. **So no update-field
-value from this dump can be trusted** — that includes `EmoteState`, `NpcFlags`,
-`UnitFlags` and every stat. Anything below that needed those was taken from the world
-DB or from a dedicated opcode instead. Fixing it means aligning the movement status
-block and the 12.1 update-field masks, and is its own job.
+One thing worth knowing about the module layout, because it looks alarming: a stack
+trace naming `WowPacketParserModule.V9_0_1_36216` does **not** mean the parser thinks
+your dump is 9.0.1. Modules are named for the build at which a reader last had to
+change, and each build inherits every reader it has not overridden, down a fallback
+chain. `SMSG_SPELL_GO` genuinely has no reader newer than the 9.0.1 one, so that is the
+one a 12.1 dump uses, correctly.
 
 ---
 
@@ -111,11 +93,12 @@ The survivor's own emotes across the run: emote 1 OneShotTalk, emote 5
 OneShotExclamation, emote 20 OneShotBeg.
 
 To do:
-- Pull the full ordered timeline of the two guids (`idx.py`, below) and turn the leg
-  boundaries into the scene's beats.
-- Find the arrival: look for the summon and the cast on 46267 near 20:48:10, and
-  identify the teleport visual from `SMSG_SPELL_GO` / `SMSG_SPELL_START` rather than
-  from update fields, which are unreliable here.
+- Pull the full ordered timeline of the two guids (`wpp_index.py`, below) and turn the
+  leg boundaries into the scene's beats.
+- Find the arrival: look for the cast on 46267 near 20:48:10 and take the teleport
+  visual from `SMSG_SPELL_GO` / `SMSG_SPELL_START`, whose `SpellXSpellVisualID` now
+  reads correctly. The create block in `SMSG_UPDATE_OBJECT` is also readable, so the
+  survivor's spawn state can be checked there directly.
 - Decide summon-vs-spawn. If the survivor has to be assembled before it is seen,
   conceal it via a `Creature*` so no client ever draws it mid-assembly.
 - The bed hand-off is the same shape as the carry scene already written for 46449 in
@@ -144,11 +127,31 @@ To do:
 
 ### 3. Emote state for the other gnomes  — *not started*
 
-Careful: **the persistent emote state cannot be read from this dump** — see the
-`SMSG_UPDATE_OBJECT` note above. What *is* trustworthy is `SMSG_EMOTE`, which carries
-the one-shots, and `SMSG_SET_AI_ANIM_KIT`:
+`EmoteState` reads correctly now, so this can be checked rather than guessed. Observed
+values, keyed by position and matched against the world DB:
 
-| Entry | One-shot emotes seen |
+| Entry | Observed `EmoteState` | DB state |
+|---|---|---|
+| 42552 Physician's Assistant | 69 `EMOTE_STATE_USE_STANDING` | 167775 and 167917 already carry 69; **169002 has no `creature_addon` row** and falls back to template 0 |
+| 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
+| 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value |
+| 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
+
+So most of this is **already right**. The gap is spawns with no `creature_addon` row,
+which silently inherit `creature_template_addon`:
+
+- **42552 guid 169002** — inherits 0 while both its siblings stand at 69.
+- **45847 guids 167787, 167790, 167793, 167923, 168075, 168133** — inherit 214
+  `READY_RIFLE`. 214 is right for the Operatives fighting outside, but these six stand
+  at the decontamination stations inside the room, where the one spawn that does have a
+  row (168120) is set to 69.
+
+The dump does not directly show those six, so confirm in game before writing rows for
+them rather than assuming they match 168120.
+
+One-shot emotes, which are a separate thing from the state and come from `SMSG_EMOTE`:
+
+| Entry | One-shots seen |
 |---|---|
 | 46025 S.A.F.E. Officer | 396 OneShotTalkNoSheathe ×26, 273 OneShotYes ×11, 274 OneShotNo ×11, 6 OneShotQuestion ×10 |
 | 46268 Survivor | 18 OneShotCry ×5, 20 OneShotBeg ×3 |
@@ -159,8 +162,6 @@ Anim kits: **45847 → kit 573** (×45), **46363 → kit 983** and kit 0 to clea
 **46449 → kit 989**.
 
 To do:
-- Establish which gnomes read wrong in game first — the current values are
-  `creature_template_addon.emote` 214 on 45847, 431 on 46268, 0 elsewhere.
 - An anim kit composes with `StandState` but an emote state breaks it, so the two do
   not stack. Read `creature_addon` before changing either, and test poses with
   `.npc set animkit`.
@@ -269,5 +270,8 @@ line in `.git/info/exclude`.
         if b['op']=='SMSG_EMOTE': print(b['time'], b['lines'])
     "
 
-Filter by entry with a regex for `Entry: <n>` over the joined body lines; guid low
-distinguishes individual spawns of the same entry.
+Filter by entry with a regex for `Entry: <n>` over the joined body lines. **Do not use
+guid `Low` to tell two spawns of one entry apart** — the values come back clustered at
+multiples of 2^23 and repeat across unrelated entries, so the low qword is not a flat
+counter. Key on the decoded position instead and match it against `creature`, which is
+how the emote-state spawns in task 3 were identified.

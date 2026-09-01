@@ -4,7 +4,7 @@ Working document for the Loading Room pass. Seven tasks, none of them started; w
 done so far is the toolchain and the reconnaissance each one needs.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_08_31_03_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_08_31_04_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -125,7 +125,7 @@ To do:
 - Only guid 168990. Do not touch 167810 or 167812 — scope every DB edit to the spawns
   actually named, never to every spawn of the entry.
 
-### 3. Emote state for the other gnomes  — *not started*
+### 3. Emote state for the other gnomes  — *46267 done, the rest not started*
 
 `EmoteState` reads correctly now, so this can be checked rather than guessed. Observed
 values, keyed by position and matched against the world DB:
@@ -136,6 +136,7 @@ values, keyed by position and matched against the world DB:
 | 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
 | 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value |
 | 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
+| 46267 Rescued Survivor | `EmoteState` 0 throughout; the pose is `StandState` — 8 `KNEEL` or 1 `SIT` | **done**, see below |
 
 So most of this is **already right**. The gap is spawns with no `creature_addon` row,
 which silently inherit `creature_template_addon`:
@@ -148,6 +149,47 @@ which silently inherit `creature_template_addon`:
 
 The dump does not directly show those six, so confirm in game before writing rows for
 them rather than assuming they match 168120.
+
+**46267 Rescued Survivor — done, `2026_08_31_03_world.sql`.** Worth reading before
+starting the other entries, because the shape of the problem repeats.
+
+These gnomes carry no emote state at all. `EmoteState` is 0 in every one of their
+create blocks; the pose is `StandState`, which is a different field and is set from
+`creature_addon.StandState`, not `emote`. Anything that goes looking for their pose in
+the emote column finds nothing and concludes they are unposed.
+
+The room had fifteen spawns of 46267. Eleven of them, plus one that only appears while
+walking, matched a position exactly — 0.000 yards, so the DB coordinates and the room's
+are the same numbers. **168897** (−5157.85, 764.98) and **168909** (−5159.82, 776.93)
+matched nothing, and both stand on ground the rest of the group covers well: 168909 has
+a confirmed neighbour 4.8 yards away and 168897 one at 2.4. They were extras, and both
+are now deleted. The rows are backed up at
+`/home/serverproject/dumps/rescued_survivor_46267_backup_2rows.sql`, which matters because
+the world DB is MyISAM and the delete does not roll back.
+
+Poses now set, all ten static spawns written out in one place in the file:
+
+| Pose | Guids | Was |
+|---|---|---|
+| `StandState` 8 `KNEEL` | 167772, 167773, 167774, 167776, 167777 | already 8 — unchanged |
+| `StandState` 1 `SIT` | 167580, 167581, 167582, 167916, 167918 | **no `creature_addon` row**, inheriting template 0 `STAND` |
+
+Same failure as 42552 guid 169002 and the six 45847s above: the missing row is invisible,
+because the spawn silently inherits `creature_template_addon` and looks deliberate.
+
+All ten also sat on `MovementType` 1 with `wander_distance` 3, and none of them move —
+`MovementFlags` 0 and not one spline across the whole run, while the scene survivor next
+to them sends five or six. Random movement never clears a stand state, so what this
+produced was a gnome drifting around its spawn point still kneeling. That is now
+`MovementType` 0, `wander_distance` 0. **Check the other entries for the same thing
+before writing their poses** — setting a pose on a wandering spawn just gives you a
+sliding gnome.
+
+**168936 was deliberately left alone** — `MovementType` 1, no addon row. It is the task 1
+scene survivor: it is the one that walks and it is correct standing at spawn. Task 1
+decides what happens to it.
+
+`creature_addon` has no `.reload`, so none of this shows until the worldserver restarts.
 
 One-shot emotes, which are a separate thing from the state and come from `SMSG_EMOTE`:
 

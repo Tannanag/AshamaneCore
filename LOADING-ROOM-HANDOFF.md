@@ -1,8 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2 and 3 are done** —
-each watched in game and signed off. **Task 4 is closed as not relevant.** **Tasks 5 and 6
-are written and waiting on an in-game check.** The remaining two are not started, and each
+Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3 and 6 are done** —
+each watched in game and signed off. **Task 4 is closed as not relevant.** **Task 5 is
+written and waiting on an in-game check.** The remaining two are not started, and each
 has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
@@ -634,11 +634,11 @@ To check in game:
 - The dump has no ride in it — all three 46185 spawns appear only as idle create blocks —
   so none of this had a recording to check against; it is read off the core.
 
-### 6. Sanitron refuses a player not on the quest  — *written, awaiting an in-game check*
+### 6. Sanitron refuses a player not on the quest  — *done, tested in game*
 
-`2026_09_01_06_world.sql`. One `conditions` row, no script change. Hand-applied, so the
-updater will run it again on the next start; it is written to survive that, and applying
-it twice was checked to leave exactly one row.
+`2026_09_01_06_world.sql`. One `conditions` row, no script change. Watched in game and
+signed off. Hand-applied, so the updater will run it again on the next start; it is
+written to survive that, and applying it twice was checked to leave exactly one row.
 
 `OnGossipHello` already gated on
 `GetQuestStatus(QUEST_DECONTAMINATION) == QUEST_STATUS_INCOMPLETE`, so the gossip path was
@@ -687,11 +687,12 @@ Every input the load-time validation checks is present: `creature_template` 4618
 four override rows, so 125095 being absent from it means nothing — and `DBErrors.log`,
 which does record this class of fault, carries no complaint for either id.
 
-To check in game:
+What was checked in game:
 - On the quest: the cursor is there and the ride starts as before.
 - Never taken it, and again after handing it in: no cog cursor, and clicking does nothing.
-- `.reload conditions` picks the row up. Unlike the `creature_addon` work in tasks 2 and 3,
-  this one needs no worldserver restart.
+
+`.reload conditions` picks the row up. Unlike the `creature_addon` work in tasks 2 and 3,
+this one needed no worldserver restart.
 
 ### 7. Clean Cannon X-2 — put its gunner in it  — *not started*
 

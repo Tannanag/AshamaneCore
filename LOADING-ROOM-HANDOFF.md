@@ -576,7 +576,7 @@ has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 7
 not be capped on both sides as it stands; and that the spawns must be identified from
 `.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
-### 5. Sanitron 500 reusable by the next player  — *done, tested in game; one fix since, awaiting a check*
+### 5. Sanitron 500 reusable by the next player  — *done, tested in game*
 
 `npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Watched
 in game and signed off. Script only, no SQL — task 6 took `2026_09_01_06_world.sql`.
@@ -635,10 +635,10 @@ The dump has no ride in it — all three 46185 spawns appear only as idle create
 none of this had a recording to check against; it was read off the core and confirmed in
 game instead.
 
-**A used Sanitron came back grounded, and that is fixed — awaiting a check.** Reported in
-game after the sign-off: a machine that had been ridden sat on the walkway instead of
-hovering, while the two nobody had touched still hovered. The despawn this task added is
-what caused it, so it belongs here rather than as a task of its own.
+**A used Sanitron came back grounded, and that is fixed — watched in game and signed
+off.** Reported in game after the first sign-off: a machine that had been ridden sat on the
+walkway instead of hovering, while the two nobody had touched still hovered. The despawn
+this task added is what caused it, so it belongs here rather than as a task of its own.
 
 46185 is `InhabitType` **4**, air only, so the hover is not an animation — it is
 `Creature::UpdateMovementFlags` handing out `MOVEMENTFLAG_DISABLE_GRAVITY` every tick
@@ -667,9 +667,9 @@ has the same two lines and the long write-up of the deadlock. The rule it gives 
 applying before it bites a third time: **adding a despawn to a creature with
 `InhabitType` air needs those two lines in the same change.**
 
-Needs a worldserver restart for the new binary. To check: ride one through to the
-explosion and confirm it is hovering when it comes back, at the same height as the two
-that have not been used.
+It needed a worldserver restart for the new binary. Checked in game after that: a machine
+ridden through to the explosion is hovering when it comes back, at the same height as the
+two that have not been used.
 
 ### 6. Sanitron refuses a player not on the quest  — *done, tested in game*
 

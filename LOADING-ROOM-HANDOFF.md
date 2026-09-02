@@ -1,8 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Seven tasks. **Tasks 1, 2 and 3 are done** —
+Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2 and 3 are done** —
 each watched in game and signed off. **Task 4 is closed as not relevant.** **Task 5 is
-written and waiting on an in-game check.** The remaining two are not started, and each
+written and waiting on an in-game check.** The remaining three are not started, and each
 has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
@@ -725,6 +725,97 @@ near the stations; giving them `EMOTE_STATE_USE_STANDING` would be wrong, and th
 have no addon row. The other two are not at the stations either: **168075** and **168133**
 sit on Z 287.48 in the north-west corner, 22 yards from 168120 and on the floor above it,
 and they take a stand state rather than an emote. Task 3 has the numbers.
+
+### 8. Quest text for the Pinned Down chain  — *not started*
+
+Every quest from **27670 Pinned Down** to the end of the gnome starting experience is
+missing its **Progress** and **Completion** text. This is not a Loading Room job — it runs
+the length of the zone — but it is the chain the Loading Room sits in the middle of.
+
+**The Description half is already there; the other two are not there at all.** Measured
+across the whole chain:
+
+- `quest_template.QuestDescription` — **present on all 37**, 394 to 508 characters. Two
+  were read word for word against Wowhead (27670 and 26373) and match exactly, tokens
+  aside. So this column probably needs checking rather than rewriting; fix only the ones
+  that differ.
+- **Progress** — `quest_request_items.CompletionText`. **No row at all** for any of the 37.
+- **Completion** — `quest_offer_reward.RewardText`. **No row at all** for any of the 37.
+
+Missing rows rather than empty strings is why this is invisible from the server side:
+`ObjectMgr` loads both tables optionally and logs nothing for a quest that has no row, so
+there is no error to find. The player just gets an empty box.
+
+**The chain is exactly `QuestSortID` 6457, and the number confirms itself.** All 37 quests
+carrying that sort id lack both rows, and the set is identical to the one you get by
+walking `quest_template_addon.PrevQuestID`/`NextQuestID` and `RewardNextQuest` out from
+27670 — which is also the 37 Wowhead counts for this chain. So the sort id is a safe
+handle and nothing has to be picked out by hand:
+
+    SELECT ID FROM quest_template WHERE QuestSortID = 6457;
+
+| # | Quests |
+|---|---|
+| the Loading Room run | 27670 Pinned Down, 28167 Report to Carvo Blastbolt, 27671 See to the Survivors, 28169 Withdraw to the Loading Room!, 27635 Decontamination, 27674 To the Surface |
+| the class fork | 26197, 26199, 26202, 26203, 26206, 31135, 41217 — all *The Future of Gnomeregan* |
+| still forked | 26421, 26422, 26423, 26424, 26425, 31137, 41218 — all *Meet the High Tinker* |
+| rejoined | 26208 The Fight Continues, 26566 A Triumph of Gnomish Ingenuity, 26222 Scrounging for Parts |
+| side quests off 26222 | 26264 What's Left Behind, 26265 Dealing with the Fallout |
+| out to the surface | 26205 A Job for the Multi-Bot, 26316 What's Keeping Jessup?, 26284 Missing in Action, 26285 Get Me Explosives Back! |
+| Crushcog | 26318 Finishin' the Job, 26329 One More Thing, 26331 Crushcog's Minions, 26333 No Tanks! |
+| Brewnall and out | 26339 Staging in Brewnall, 26342 Paint it Black, 26364 Down with Crushcog!, 26373 On to Kharanos |
+
+**The fork is per class and the text differs across it**, so those fourteen cannot be
+written once and copied. `quest_template_addon.AllowableClasses` gives the mapping
+outright — 1 warrior 26203 → 26425, 4 hunter 41217 → 41218, 8 rogue 26206 → 26423,
+16 priest 26199 → 26422, 128 mage 26197 → 26421, 256 warlock 26202 → 26424, 512 monk
+31135 → 31137 — and all seven pairs rejoin at 26208. The seven Descriptions already in the
+DB are 446–504 characters and all different from one another, which is the shape to expect
+from the two missing columns as well.
+
+**Five more hang off it and are a scope decision.** 26198 The Arts of a Mage, 26200 Priest,
+26201 Warlock, 26204 Warrior, 26207 Rogue — each the follow-up to its class's *The Future
+of Gnomeregan*. They are `QuestSortID` **801**, not 6457, so they are outside the count
+above, and they are missing both rows too. Take them or leave them, but decide rather than
+discover it later.
+
+**When each string is actually seen**, which is also how to test it:
+
+- **Completion** is the hand-in box — `SendQuestGiverOfferReward`.
+- **Progress** is the box you get when you talk to the ender **while the quest is still
+  incomplete**. `PlayerMenu::SendQuestGiverRequestItems` returns early into the offer
+  reward for any quest without `QUEST_SPECIAL_FLAGS_DELIVER` once it can be completed, so
+  on a kill or talk quest the Progress text never appears after the objective is done. A
+  test that finishes the objective first will report the text as fine when it is empty.
+
+Writing it:
+
+- The text comes off each quest's Wowhead page. **Not every quest has a Progress** — 26373
+  On to Kharanos has none — and a quest with no Progress on Wowhead should get no
+  `quest_request_items` row rather than a row holding an empty string.
+- **The tokens have to go back in by hand, and this is the actual work.** The DB text uses
+  `$B` for a line break, `$N`/`$n` player name, `$C`/`$c` class, `$R`/`$r` race and
+  `$G he:she;` for gender; Wowhead renders all of them, so what you copy has `<name>` in it
+  and no paragraph breaks. 27670's Description already in the DB is the reference for the
+  house style: `...S.A.F.E.$B$BI don't know how you managed to survive the radiation down
+  here, $n, but...`
+- Columns are `ID, EmoteOnComplete, EmoteOnIncomplete, EmoteOnCompleteDelay,
+  EmoteOnIncompleteDelay, CompletionText, VerifiedBuild` and `ID, Emote1..Emote4,
+  EmoteDelay1..EmoteDelay4, RewardText, VerifiedBuild`. The house style in the rows either
+  side of these ids: emotes and delays 0, or `EmoteOnComplete` 1 with `EmoteOnIncomplete` 0,
+  which is the most common pair in the table (5122 rows against 3090 at 0/0);
+  `quest_offer_reward.Emote1` is 0 on 9159 rows and 1 on 1820. `VerifiedBuild` 0.
+- **The file must survive being applied twice** — hand-applying skips the `updates` row, so
+  the updater runs it again on the next start. `DELETE FROM ... WHERE ID IN (...)` ahead of
+  the inserts, both tables.
+- Locales are separate tables (`quest_offer_reward_locale`, `quest_request_items_locale`)
+  and are out of scope; `quest_template_locale` already carries eight locale rows per quest
+  here, so only the enUS base rows are being added.
+
+**This gap is not specific to the gnome chain** — 800 of the 990 quests in the 27000 id
+band have no `quest_offer_reward` row either, and the table covers 12,081 of 29,007 quests
+in all. Do not let the fix widen: this task is the 37 (or 42 with the class quests), and
+the rest of the DB is somebody else's pass.
 
 ---
 

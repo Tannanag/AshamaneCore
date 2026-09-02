@@ -1,9 +1,8 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Seven tasks. **Task 1 is done** — watched in
-game and signed off. Task 2 is written and applied but **not signed off**, and needs a
-worldserver restart before any of it shows. Task 3 has its 46267 half written and applied,
-also **not signed off**, and the rest of it is untouched; the other four are not started.
+game and signed off, and so is **task 2**. Task 3 has its 46267 half written and applied
+but **not signed off**, and the rest of it is untouched; the other four are not started.
 Each has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
@@ -266,18 +265,17 @@ is wrong by 95° — `2026_09_01_00_world.sql` corrects it to 1.3962633.
 start of the line finds nothing and the whole thing looks like it sends no facings at
 all, which is what happened here. Match anywhere in the line.
 
-### 2. Patrol path for the S.A.F.E. Officer  — *written and applied, not signed off*
+### 2. Patrol path for the S.A.F.E. Officer  — *done, tested in game*
 
 `2026_09_01_01_world.sql`. Path **1689900** on spawn **168990**, 44 nodes, one closed
-circuit of the room at walk speed. Hand-applied, so the updater will run it again on the
-next start; it is written to survive that.
+circuit of the room at walk speed. Watched in game and signed off. Hand-applied, so the
+updater will run it again on the next start; it is written to survive that.
 
-**Needs a worldserver restart, not `.reload waypoint_data`.** The spawn had no
-`creature_addon` row at all, and that table has no `.reload` — until it restarts,
-`LoadCreatureAddons` sees no `path_id` and silently downgrades `MovementType` 2 back to
-idle, so the officer stands exactly as he does now and nothing looks different. Check
-the log for `sql.sql` lines about a waypoint motion type with no path assigned; zero of
-those is the pass signal.
+**It took a worldserver restart to show, not `.reload waypoint_data`.** The spawn had no
+`creature_addon` row at all, and that table has no `.reload` — until the restart,
+`LoadCreatureAddons` saw no `path_id` and silently downgraded `MovementType` 2 back to
+idle, so the officer stood exactly as before and nothing looked different. Worth
+remembering for any of the remaining tasks that add an addon row.
 
 The route was readable because the officer walked it **twice** inside the run — 75
 splines, 44 endpoints, and all 30 nodes the two laps have in common are bit-identical

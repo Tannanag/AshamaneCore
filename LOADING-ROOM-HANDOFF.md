@@ -575,7 +575,7 @@ has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 7
 not be capped on both sides as it stands; and that the spawns must be identified from
 `.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
-### 5. Sanitron 500 reusable by the next player  — *done, tested in game*
+### 5. Sanitron 500 reusable by the next player  — *done, tested in game; a quest credit fix since, awaiting a check*
 
 `npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Watched
 in game and signed off. Script only, no SQL — task 6 took `2026_09_01_06_world.sql`.
@@ -669,6 +669,35 @@ applying before it bites a third time: **adding a despawn to a creature with
 It needed a worldserver restart for the new binary. Checked in game after that: a machine
 ridden through to the explosion is hovering when it comes back, at the same height as the
 two that have not been used.
+
+**The wash gave no quest credit, and that one is not a regression — it is original to the
+script.** Reported in game: riding the Sanitron while on 27635 Decontamination completed
+the wash but never credited the quest. Nothing in tasks 5 or 6 caused it; the script has
+always done this, and it went unnoticed because every check up to now watched the machine
+rather than the quest log.
+
+27635 has exactly **one objective**, and it is not a kill or an item:
+
+    quest_objectives: QuestID 27635, Type 3 (TALKTO), ObjectID 46185, Amount 1
+    Description: "Decontamination Process started"
+
+Phase 8 called `player->CompleteQuest(QUEST_DECONTAMINATION)`, and
+`Player::CompleteQuest` (Player.cpp:15783) sets the quest status and the log slot state and
+**nothing else** — it never touches the objective counter. So the objective sat at 0/1 with
+the client showing the quest unfinished.
+
+`player->TalkedToCreature(NPC_SANITRON_5000, me->GetGUID())` replaces it. That is the
+credit path for a TALKTO objective: it fills the counter through `SetQuestObjectiveData`,
+sends the client its `SendQuestUpdateAddCredit` so the log ticks over, and then calls
+`CompleteQuest` itself once `CanCompleteQuest` passes. Its own gate is a check for
+`QUEST_SPECIAL_FLAGS_SPEAKTO`, which is satisfied because `ObjectMgr` gives that flag to
+any quest carrying a TALKTO objective (ObjectMgr.cpp:4496).
+
+The timing is unchanged — the credit still lands at phase 8, where the old call was, so the
+run plays exactly as before. Needs a worldserver restart for the new binary.
+
+To check: ride it on the quest and confirm "Decontamination Process started" ticks to 1/1
+in the log and the quest can be handed in for **27674 To the Surface**.
 
 ### 6. Sanitron refuses a player not on the quest  — *done, tested in game*
 

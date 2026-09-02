@@ -668,12 +668,14 @@ To do:
   pointing rather than assuming the spawn orientation survives.
 - Leave `unit_flags` 33536 alone unless the cursor is still there after seating.
 
-**This corrects task 3.** That section lists six 45847 spawns with no `creature_addon`
-row and reasons that they "stand at the decontamination stations inside the room", so
-they should probably take 168120's emote 69. Four of those six — 167787, 167790, 167793,
-167923 — are these gunners and are nowhere near the stations. Only **168075**
-(−5187.24, 754.415) and **168133** (−5185.63, 751.724) are actually in the station band
-with 168120. Giving the gunners `EMOTE_STATE_USE_STANDING` would be wrong.
+**This corrects task 3, and task 3 then corrected the rest of it.** That section listed
+six 45847 spawns with no `creature_addon` row and reasoned that they "stand at the
+decontamination stations inside the room", so they should probably take 168120's emote 69.
+Four of those six — 167787, 167790, 167793, 167923 — are these gunners and are nowhere
+near the stations; giving them `EMOTE_STATE_USE_STANDING` would be wrong, and they still
+have no addon row. The other two are not at the stations either: **168075** and **168133**
+sit on Z 287.48 in the north-west corner, 22 yards from 168120 and on the floor above it,
+and they take a stand state rather than an emote. Task 3 has the numbers.
 
 ---
 

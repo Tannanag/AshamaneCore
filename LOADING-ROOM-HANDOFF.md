@@ -1,9 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3, 5 and 6 are
-done** — each watched in game and signed off. **Task 4 is closed as not relevant.**
-**Task 7 is written and waiting on an in-game check.** Task 8 is not started and has the
-reconnaissance it needs written up below.
+Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3, 5, 6 and 7 are
+done** — each watched in game and signed off. **Task 4 is closed as not relevant.** Task 8
+is not started and has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
@@ -731,12 +730,13 @@ What was checked in game:
 `.reload conditions` picks the row up. Unlike the `creature_addon` work in tasks 2 and 3,
 this one needed no worldserver restart.
 
-### 7. Clean Cannon X-2 — put its gunner in it  — *written, awaiting an in-game check*
+### 7. Clean Cannon X-2 — put its gunner in it  — *done, tested in game*
 
 `npc_clean_cannon_x2` in `zone_dun_morogh_area_new_tinkertown.cpp`, with
-`2026_09_01_07_world.sql`. Needs a **worldserver restart** — a new binary and
-`creature_addon`, which has no `.reload`. Hand-applied, so the updater will run the file
-again on the next start; applying it twice was checked to leave exactly four addon rows.
+`2026_09_01_07_world.sql`. Watched in game and signed off. It needed a **worldserver
+restart** — a new binary and `creature_addon`, which has no `.reload`. Hand-applied, so the
+updater will run the file again on the next start; applying it twice was checked to leave
+exactly four addon rows.
 
 | Cannon 46208 | Gunner 45847 | apart | orientation |
 |---|---|---|---|
@@ -818,11 +818,11 @@ Worth knowing that clicking a cannon does nothing **today** regardless: with no
 `npc_spellclick_spells` row for 46208, `HandleSpellClick`'s loop body never runs, so the
 cursor has always been an advertisement for a click that was never wired up.
 
-To check in game:
-- All four gunners standing on their cannons rather than beside them, facing along the
+What was checked in game:
+- All four gunners stand on their cannons rather than beside them, facing along the
   barrel, with the rifle stowed rather than held ready.
 - No cog cursor on a cannon once its gunner is aboard.
-- Ride the Sanitron through the wash and confirm the cannons still fire at you.
+- The cannons still fire at a player riding the Sanitron through the wash.
 
 ### 8. Quest text for the Pinned Down chain  — *not started*
 

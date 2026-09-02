@@ -1,14 +1,14 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Seven tasks. **Task 1 is done** — watched in
-game and signed off, and so is **task 2**. Task 3 has its 46267 half written and applied
-but **not signed off**, and the rest of it is untouched; the other four are not started.
-Each has the reconnaissance it needs written up below.
+game and signed off, and so is **task 2**. Task 3 is now written and applied in full but
+**not signed off** — it needs a worldserver restart before any of it shows; the other four
+are not started. Each has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_04_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_05_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -324,7 +324,7 @@ world DB is MyISAM and the delete does not roll back.
 167810 stays. It is 9.6 yards from the nearest node, far enough not to be a stand-in for
 any part of the route, and it holds a post.
 
-### 3. Emote state for the other gnomes  — *46267 written, not signed off; the rest not started*
+### 3. Emote state for the other gnomes  — *all written and applied, none signed off*
 
 `EmoteState` reads correctly now, so this can be checked rather than guessed. Observed
 values, keyed by position and matched against the world DB:
@@ -332,13 +332,14 @@ values, keyed by position and matched against the world DB:
 | Entry | Observed `EmoteState` | DB state |
 |---|---|---|
 | 42552 Physician's Assistant | 69 `EMOTE_STATE_USE_STANDING` | 167775 carries 69 and is correct; 167917 is now the task 1 scene actor and takes 69 from the script mid-run; 169002 is deleted |
-| 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6) | that spawn is 168120 and already carries 69; six others in the room have no addon row and inherit template **214** `EMOTE_STATE_READY_RIFLE` |
-| 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all nine already carry the matching value; a tenth row was a duplicate and is deleted, see below |
+| 45847 S.A.F.E. Operative | 69 at (−5164.4, 754.6); `EmoteState` 0 and `StandState` **1 SIT** at (−5187.2, 754.4) and (−5185.6, 751.7) | 168120 already carried 69; 168075 and 168133 had no addon row and inherited template **214** `EMOTE_STATE_READY_RIFLE` — written and applied, see below |
+| 46230 S.A.F.E. Technician | 233 `EMOTE_STATE_WORK_MINING`, and 69 at (−5161.1, 723.8) | all eight already carry the matching value; a ninth row was a duplicate and is deleted, see below |
 | 46268 Survivor | 431 `EMOTE_STATE_COWER` | template already 431 — correct |
 | 46267 Rescued Survivor | `EmoteState` 0 throughout; the pose is `StandState` — 8 `KNEEL` or 1 `SIT` | written and applied, see below |
 
-**46230 guid 169037 is deleted**, in `2026_09_01_03_world.sql`. The room held ten rows of
-46230 against the nine positions the table above counts: 169037 and **168135** stood 0.20
+**46230 guid 169037 is deleted**, in `2026_09_01_03_world.sql`. The room held nine rows of
+46230 against the eight positions the table above counts (the entry has ten spawns in all;
+168119 and 168848 are outside the room): 169037 and **168135** stood 0.20
 yards apart at the same height, on the same orientation 4.06662, both posed with emote
 233 — one technician entered twice, with the two models inside one another. 168135 keeps
 the post. Both rows are backed up at
@@ -354,17 +355,48 @@ So most of the rest of this is **already right**. The gap is spawns with no
 
 - ~~**42552 guid 169002**~~ — deleted by task 1; it was a stand-in for a node of the
   Assistant's walk, not a spawn that belongs in the room.
-- **45847 guids 168075, 168133** — inherit 214 `READY_RIFLE`. 214 is right for the
-  Operatives fighting outside, but these two stand at the decontamination stations inside
-  the room, where the one spawn that does have a row (168120) is set to 69.
+- ~~**45847 guids 168075, 168133**~~ — done, in `2026_09_01_04_world.sql`. They were
+  reasoned about here as standing at the decontamination stations and so wanting 168120's
+  emote 69. Both halves of that are wrong and the section below has the numbers.
 - ~~**45847 guids 167787, 167790, 167793, 167923**~~ — these were counted here as four
   more of the same and they are not. They are the four cannon gunners, each standing on a
   Clean Cannon X-2 half a yard away; **task 7** has them. A seated passenger takes its
   pose from the vehicle seat, so 69 `USE_STANDING` would be wrong for them and 214 is
   left where it is.
 
-The dump does not directly show 168075 or 168133, so confirm in game before writing rows
-for them rather than assuming they match 168120.
+**168075 and 168133 sit, and that is read rather than guessed — `2026_09_01_04_world.sql`.**
+This section previously recorded that the dump does not show either spawn. It shows both,
+and the filter that missed them was looking under `Creature/` guids keyed on the low
+qword; the low qword repeats across unrelated entries, so it matched entry 46345 instead
+and came back empty. Keyed on the full guid, each create block matches its `creature` row
+on position to five decimals and on orientation to all of them:
+
+| Guid | Position | Orientation | `EmoteState` | `StandState` | `SheatheState` |
+|---|---|---|---|---|---|
+| 168075 | (−5187.24, 754.415, 287.48035) | 0.541052043437957763 | 0 | **1 SIT** | 1 |
+| 168133 | (−5185.63, 751.724, 287.48035) | 0.698131680488586425 | 0 | **1 SIT** | 1 |
+
+So they are the 46267 failure again under a second entry: **the pose is `StandState` and
+the emote state is 0**, and a column-wise look for their pose finds 214 and concludes they
+are posed already. Giving them 69 would have stood them back up.
+
+They are also not at the decontamination stations. 168120 is at (−5164.44, 754.585) on
+Z 285.557, the lower floor; these two are 22 yards west on Z 287.48, in the north-west
+corner beside Officer 167810 and kneeling Survivor 167777. A seated pair in a corner with
+a standing officer is what that cluster is.
+
+`MovementType` was already 0 with no wander on both, so the sliding-gnome trap the 46267
+half hit does not apply here.
+
+**168120 changes sheath only**, in the same file: it carries `SheathState` 2 against an
+observed 1, with its emote 69 correct and unchanged. It is rewritten in full alongside the
+other two so the room's three posted Operatives read from one place.
+
+A guid row in `creature_addon` **replaces** `creature_template_addon` outright rather than
+merging with it — `Creature::GetCreatureAddon` returns the guid row and stops — so emote 0
+on these rows is what clears the inherited 214. `LoadCreaturesAddon` then applies
+`StandState` and `SheathState` unconditionally and only writes emote when it is non-zero,
+which is exactly the wanted result.
 
 **46267 Rescued Survivor — written and applied in `2026_08_31_03_world.sql`, not yet
 checked in game.** `creature_addon` has no `.reload`, so none of it shows until the
@@ -421,7 +453,46 @@ One-shot emotes, which are a separate thing from the state and come from `SMSG_E
 | 42552 Physician's Assistant | 25 OneShotPoint ×5 |
 
 Anim kits: **45847 → kit 573** (×45), **46363 → kit 983** and kit 0 to clear it,
-**46449 → kit 989**.
+**46449 → kit 989**. **None of these is in the Loading Room**, so this task sets no anim
+kit at all. All 52 `SMSG_SET_AI_ANIM_KIT` resolve to six 45847 spawns at (−4950.9, 733.5)
+and (−5030.4, 793.9) — the firing squads — and to 46363/46449 out east. Every creature
+in the room reports `StateAnimKitID` 0 in its create block. The composition trap in the
+list below therefore never comes up here, which is why the seated pair could take a plain
+`StandState` with nothing to weigh against it.
+
+**The whole room was swept for the two fault shapes, and it is now clean.** Both the
+duplicate-row shape that caught 169037 and the scene stand-in shape that caught 168897,
+168909, 168936, 169002 and 167812:
+
+- **No duplicate pairs remain.** Every pair of spawns of one entry inside the room is at
+  least 1.34 yards apart, and the three closest pairs — 46267 167773/167916 at 1.34,
+  46267 167580/167772 at 1.59, 46230 167945/167946 at 2.71 — each appear as two separate
+  create blocks with different orientations, so all six are real.
+- **Every remaining spawn is accounted for.** Each of the 50 `creature` rows in the room
+  matches a create block, and each block a row; nothing is left standing on a scene's
+  ground. 46185 and 46208 are in there too — they come through on a **vehicle** guid type
+  rather than `Creature/`, so a sweep keyed on `Creature/` silently drops all seven.
+
+**All ten 46267 poses are confirmed.** Each of the ten static create blocks matches its
+row on position and orientation, and every `StandState` agrees with what
+`2026_08_31_03_world.sql` wrote — five at 8 KNEEL, five at 1 SIT, `EmoteState` 0
+throughout. That half is verified as written; it still wants the in-game look.
+
+Two observations that belong to other tasks and are recorded here only because this sweep
+is what turned them up:
+
+- **Task 7** — all four gunners report `EmoteState` **0**, not the 214 they inherit, and
+  sit 0.71 above their cannons at Z 288.465 on `MovementFlags` 1536. The offset is the
+  seat. Worth having when the four are finally seated.
+- **Task 4** — the three Operatives already carrying the sparring script (167627, 167633,
+  167938) also report `EmoteState` **0** against the 214 in their rows, and `SheatheState`
+  2. They are mid-fight throughout, so this is not clean evidence of their idle pose; do
+  not read it as one.
+
+**Unrelated, and outside this pass:** entry **48956 Irradiated Roach** appears four times
+inside the room and has no spawn anywhere near it — the entry has two rows in the whole
+world DB, at Z 484 and Z 518. The roaches roam, so the four positions are not spawn
+points and this is not a Loading Room job, but the zone is missing its roaches.
 
 To do:
 - An anim kit composes with `StandState` but an emote state breaks it, so the two do

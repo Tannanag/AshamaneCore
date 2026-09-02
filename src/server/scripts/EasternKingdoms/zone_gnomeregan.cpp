@@ -179,6 +179,32 @@ public:
         {
             uiTimer = 0;
             uiPhase = 0;
+
+            // 46185 is InhabitType 4, so the machine hovers, and Creature::UpdateMovementFlags
+            // hands out MOVEMENTFLAG_DISABLE_GRAVITY every tick to keep it up. It gets that
+            // right on a first spawn and never again once the wash has run, because the
+            // despawn that ends the run poisons it.
+            //
+            // DespawnOrUnsummon goes through Creature::ForcedDespawn, which kills the machine
+            // first, and setDeathState JUST_DIED drops a flying corpse with MoveFall -- whose
+            // first act is SetFall(true). RemoveCorpse follows immediately and only calls
+            // StopMoving, so the spline ends and the flag does not. The Sanitron comes back
+            // six seconds later still flagged as falling, and the two halves of
+            // UpdateMovementFlags then deadlock: it will not grant disable-gravity while
+            // IsFalling() is true, and it only clears the fall for a creature that is not
+            // airborne -- and this one respawns on its walkway, off the floor. Neither can be
+            // met, so the tick that would repair it re-asserts the break instead.
+            //
+            // The result is a used machine that sits on the ground while the ones nobody has
+            // ridden still hover. Clearing the fall here breaks the deadlock, and the gravity
+            // is set directly too so the first frame after the respawn is already right.
+            // Reset is the place for it: Creature::Respawn runs it after
+            // setDeathState(JUST_RESPAWNED), so it lands last.
+            //
+            // Same trap, and the same fix, as npc_target_acquisition_device in
+            // zone_dun_morogh_area_new_tinkertown.cpp.
+            me->SetFall(false);
+            me->SetDisableGravity(true);
         }
 
         void JustRespawned() override

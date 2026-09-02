@@ -2274,6 +2274,116 @@ private:
     TaskScheduler _scheduler;
 };
 
+// The Clean Cannon X-2 crews itself.
+//
+// Each of the four cannons has a S.A.F.E. Operative entered at its own guid + 1,
+// standing about half a yard away at ground level and carrying the cannon's own
+// orientation to six decimals. In the dump not one of those four is standing: all four
+// ride their cannon in seat 0 at TransportPosition (-1.0872, 0, 0.98481) -- the 0.98
+// yard lift that stands the gunner up on the barrel -- and there is no fifth 45847
+// anywhere near a cannon. The room holds seven of the entry in total: these four,
+// seated, and the three posted Operatives over in the north-west corner. So the ground
+// spawns are stand-ins for a gunner that belongs in the seat, the same shape the
+// teleporter scene found under 46267 and 42552.
+//
+// They are seated rather than deleted and replaced with vehicle_template_accessory,
+// which is the mechanism the shape of this first suggests. Three things rule it out:
+//
+//   - Vehicle::InstallAccessory summons a *new* creature of the accessory entry. The
+//     four authored spawns would go on standing beside their own doubles, so that route
+//     costs four deletes before it does anything.
+//   - It seats through Unit::HandleSpellClick, which walks npc_spellclick_spells for the
+//     vehicle's entry. 46208 has no row there, so the install would silently do nothing
+//     until one was added -- and adding one hands players a click path into a cannon
+//     that nothing in the dump suggests retail offers.
+//   - A summon has no spawn id, so creature_addon cannot reach it and it would wear
+//     45847's template emote 214 READY_RIFLE and SheathState 2. The seated gunners
+//     report EmoteState 0 and SheatheState 1, which per-guid addon rows give the real
+//     spawns.
+//
+// The facing needs no help here, unlike the carry scene above. VehicleJoinEvent::Execute
+// hardcodes SetFacing(0), and this seat's own TransportPosition orientation is 0 as well,
+// so the gunner ends up looking along its cannon exactly as the dump has it.
+//
+// Seating also takes the cog cursor off the cannon without touching a flag: the join
+// event decrements Vehicle::UsableSeatNum and clears UNIT_NPC_FLAG_SPELLCLICK when the
+// count reaches zero, and 1173 has only the one seat.
+enum CleanCannonX2
+{
+    NPC_SAFE_OPERATIVE_GUNNER = 45847,
+
+    // Vehicle 1173's only seat, read off the dump as VehicleSeatIndex 0. VehicleSeat.db2
+    // cannot settle it from here -- the collapsed SeatID array leaves the reader off by
+    // one, so seat 8674 could be read as either index.
+    SEAT_CANNON_GUNNER        = 0
+};
+
+// A gunner stands 0.50-0.57 yards from its own cannon, the cannons are 9.5 yards apart at
+// the closest, and the nearest 45847 that is not a gunner is 22 yards away in the corner.
+// So this radius cannot pick up a neighbour's gunner or one of the posted Operatives.
+static constexpr float CANNON_GUNNER_RANGE = 3.0f;
+
+// Cannon and gunner are both static spawns on the same grid and nothing orders the two,
+// so the first attempt may find no gunner at all. The retry covers that rather than an
+// assumption about which of them the map creates first.
+static constexpr Milliseconds CANNON_CREW_FIRST = Milliseconds(1000);
+static constexpr Milliseconds CANNON_CREW_RETRY = Milliseconds(3000);
+
+struct npc_clean_cannon_x2 : public ScriptedAI
+{
+    npc_clean_cannon_x2(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        _scheduler.Schedule(CANNON_CREW_FIRST, [this](TaskContext task)
+        {
+            if (IsCrewed())
+                return;
+
+            SeatGunner();
+
+            // Boarding is asynchronous: Vehicle::AddPassenger queues a VehicleJoinEvent,
+            // so the seat is still empty when the cast returns and there is nothing to
+            // read at the call site. The next pass is what confirms it, which is why this
+            // repeats until IsCrewed() rather than trusting the cast.
+            task.Repeat(CANNON_CREW_RETRY);
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    bool IsCrewed() const
+    {
+        Vehicle* kit = me->GetVehicleKit();
+        return kit && kit->GetPassenger(SEAT_CANNON_GUNNER);
+    }
+
+    void SeatGunner()
+    {
+        if (!me->GetVehicleKit())
+            return;
+
+        Creature* gunner = me->FindNearestCreature(NPC_SAFE_OPERATIVE_GUNNER, CANNON_GUNNER_RANGE);
+        if (!gunner || gunner->GetVehicle())
+            return;
+
+        // TRIGGERED_FULL_MASK rather than Unit::EnterVehicle, for the reason written out
+        // on npc_safe_operative_bearer::BoardGnome above: EnterVehicle leaves the whole of
+        // Spell::CheckCast in the way of a cast that has no business failing, and when it
+        // does refuse it says nothing and queues no join event.
+        gunner->CastCustomSpell(VEHICLE_SPELL_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0,
+            SEAT_CANNON_GUNNER + 1, me, TRIGGERED_FULL_MASK);
+    }
+
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -2284,4 +2394,5 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_target_acquisition_device);
     RegisterCreatureAI(npc_safe_operative_firing_squad);
     RegisterCreatureAI(npc_safe_officer_briefing);
+    RegisterCreatureAI(npc_clean_cannon_x2);
 }

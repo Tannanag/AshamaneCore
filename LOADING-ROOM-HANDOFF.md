@@ -1,9 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Seven tasks. **Task 1 is done** — watched in
-game and signed off, and so is **task 2**. Task 3 is now written and applied in full but
-**not signed off** — it needs a worldserver restart before any of it shows; the other four
-are not started. Each has the reconnaissance it needs written up below.
+Working document for the Loading Room pass. Seven tasks. **Tasks 1, 2 and 3 are done** —
+each watched in game and signed off. The other four are not started. Each has the
+reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
@@ -329,7 +328,7 @@ world DB is MyISAM and the delete does not roll back.
 167810 stays. It is 9.6 yards from the nearest node, far enough not to be a stand-in for
 any part of the route, and it holds a post.
 
-### 3. Emote state for the other gnomes  — *all written and applied, none signed off*
+### 3. Emote state for the other gnomes  — *done, tested in game*
 
 `EmoteState` reads correctly now, so this can be checked rather than guessed. Observed
 values, keyed by position and matched against the world DB:
@@ -403,10 +402,9 @@ on these rows is what clears the inherited 214. `LoadCreaturesAddon` then applie
 `StandState` and `SheathState` unconditionally and only writes emote when it is non-zero,
 which is exactly the wanted result.
 
-**46267 Rescued Survivor — written and applied in `2026_08_31_03_world.sql`, not yet
-checked in game.** `creature_addon` has no `.reload`, so none of it shows until the
-worldserver restarts, which is why it has not been looked at. Worth reading before
-starting the other entries, because the shape of the problem repeats.
+**46267 Rescued Survivor — `2026_08_31_03_world.sql`.** Worth reading before starting the
+other entries, because the shape of the problem repeats. `creature_addon` has no
+`.reload`, so none of it showed until the worldserver restarted.
 
 These gnomes carry no emote state at all. `EmoteState` is 0 in every one of their
 create blocks; the pose is `StandState`, which is a different field and is set from
@@ -491,8 +489,8 @@ every other authored facing in this room. It points within 11.6° of the Officer
 yard miss across the 3.8 yards between them, and no packet ever turns it further. If it has
 been seen facing the wrong way in game, that is the random wander rather than the
 orientation: 167777 was one of the ten on `MovementType` 1 with a 3 yard wander, which
-`2026_08_31_03_world.sql` already cleared — **and which, like everything else in this task,
-only takes effect on a worldserver restart.**
+`2026_08_31_03_world.sql` cleared. Like everything else in this task it needed the
+worldserver restart before it showed.
 
 Anim kits: **45847 → kit 573** (×45), **46363 → kit 983** and kit 0 to clear it,
 **46449 → kit 989**. **None of these is in the Loading Room**, so this task sets no anim
@@ -518,7 +516,7 @@ duplicate-row shape that caught 169037 and the scene stand-in shape that caught 
 **All ten 46267 poses are confirmed.** Each of the ten static create blocks matches its
 row on position and orientation, and every `StandState` agrees with what
 `2026_08_31_03_world.sql` wrote — five at 8 KNEEL, five at 1 SIT, `EmoteState` 0
-throughout. That half is verified as written; it still wants the in-game look.
+throughout. That half is verified against both the dump and the game.
 
 Two observations that belong to other tasks and are recorded here only because this sweep
 is what turned them up:
@@ -536,7 +534,7 @@ inside the room and has no spawn anywhere near it — the entry has two rows in 
 world DB, at Z 484 and Z 518. The roaches roam, so the four positions are not spawn
 points and this is not a Loading Room job, but the zone is missing its roaches.
 
-To do:
+Three traps this task hit, carried forward for the remaining four:
 - An anim kit composes with `StandState` but an emote state breaks it, so the two do
   not stack. Read `creature_addon` before changing either, and test poses with
   `.npc set animkit`.

@@ -1,8 +1,8 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Seven tasks. **Tasks 1, 2 and 3 are done** —
-each watched in game and signed off. The other four are not started. Each has the
-reconnaissance it needs written up below.
+each watched in game and signed off. **Task 4 is closed as not relevant.** The remaining
+three are not started, and each has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
@@ -543,7 +543,7 @@ Three traps this task hit, carried forward for the remaining four:
 - If any of this is set from a script, remember `LoadCreaturesAddon` runs when the
   creature reaches home and will undo whatever `Reset()` set.
 
-### 4. Battle scene at the entrance  — *not started, one open question*
+### 4. Battle scene at the entrance  — *closed, not relevant*
 
 The fix set already written for the other battle is: `npc_safe_operative_sparring` as
 the spawn's `ScriptName`, a `creature_sparring_template` row at 85%, and
@@ -555,16 +555,25 @@ Present state near the Loading Room:
 
 - **Already carry the script**: 45847 guids 167627, 167633, 167938 (X −5151…−5144,
   Y 755…766), paired with Crazed Leper Gnome 46391 guids 168496, 168497.
-- **Do not**: 45847 guids 168075, 168120, 168133 (X −5187…−5164, Y 752…755), and 167632
-  at (−5101.7, 790.1) which stands near 46363 guids 984600, 984601, 984602.
+- **Do not**: 45847 guids 168075, 168120, 168133 (X −5187…−5164, Y 752…755) — but see
+  below, these three are posted rather than fighting and want no sparring script — and
+  167632 at (−5101.7, 790.1) which stands near 46363 guids 984600, 984601, 984602.
 - `creature_sparring_template` has 45847 and 46391 but **not 46363**.
 
-**Open question — which pair is "the entrance"?** Two candidate clusters, and picking
-wrong would edit spawns the request never named. Resolve with `.npc info` on the
-Operative and the gnome actually fighting at the entrance and work from those DB GUIDs
-— note `.guid` returns a runtime counter, so it has to be `.npc info`'s DB GUID. If it
-turns out to be the 46363 cluster, that entry also
-needs its own `creature_sparring_template` row or neither side can be capped.
+**Closed as not relevant**, and task 3 is most of the reason the open question stopped
+mattering. It asked which of two candidate clusters was "the entrance", since picking
+wrong would edit spawns the request never named. The western candidate is not a battle at
+all: **168075 and 168133 sit**, and **168120** works a station — all three are posted, none
+of them fights, and task 3 wrote their poses. That leaves 167627, 167633 and 167938 as the
+only fighting cluster near the Loading Room, and those three **already carry the script,
+the sparring row and the addon**. So the fix set this section describes is either already
+applied or aimed at NPCs that were never fighting.
+
+Left here as reconnaissance rather than as work. If a battle at the entrance is ever
+picked up, the two things this section still has right are that `creature_sparring_template`
+has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 790.1) could
+not be capped on both sides as it stands; and that the spawns must be identified from
+`.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
 ### 5. Sanitron 500 reusable by the next player  — *not started*
 

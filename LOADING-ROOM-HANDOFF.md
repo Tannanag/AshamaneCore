@@ -1,13 +1,14 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3, 5 and 6 are
-done** — each watched in game and signed off. **Task 4 is closed as not relevant.** The
-remaining two are not started, and each has the reconnaissance it needs written up below.
+done** — each watched in game and signed off. **Task 4 is closed as not relevant.**
+**Task 7 is written and waiting on an in-game check.** Task 8 is not started and has the
+reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_07_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_08_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -364,9 +365,9 @@ So most of the rest of this is **already right**. The gap is spawns with no
   emote 69. Both halves of that are wrong and the section below has the numbers.
 - ~~**45847 guids 167787, 167790, 167793, 167923**~~ — these were counted here as four
   more of the same and they are not. They are the four cannon gunners, each standing on a
-  Clean Cannon X-2 half a yard away; **task 7** has them. A seated passenger takes its
-  pose from the vehicle seat, so 69 `USE_STANDING` would be wrong for them and 214 is
-  left where it is.
+  Clean Cannon X-2 half a yard away; **task 7** has them, and has now written them
+  `EmoteState` 0 with `SheathState` 1 to match the dump. 69 `USE_STANDING` would have been
+  wrong for them, and so was leaving the inherited 214.
 
 **168075 and 168133 sit, and that is read rather than guessed — `2026_09_01_04_world.sql`.**
 This section previously recorded that the dump does not show either spawn. It shows both,
@@ -694,11 +695,12 @@ What was checked in game:
 `.reload conditions` picks the row up. Unlike the `creature_addon` work in tasks 2 and 3,
 this one needed no worldserver restart.
 
-### 7. Clean Cannon X-2 — put its gunner in it  — *not started*
+### 7. Clean Cannon X-2 — put its gunner in it  — *written, awaiting an in-game check*
 
-Each of the four cannons has a **S.A.F.E. Operative standing on top of it**, and none of
-them is seated. Seating them is the task; the cog cursor below turns out to be the same
-problem seen from the other end, and seating the gunner is what fixes it.
+`npc_clean_cannon_x2` in `zone_dun_morogh_area_new_tinkertown.cpp`, with
+`2026_09_01_07_world.sql`. Needs a **worldserver restart** — a new binary and
+`creature_addon`, which has no `.reload`. Hand-applied, so the updater will run the file
+again on the next start; applying it twice was checked to leave exactly four addon rows.
 
 | Cannon 46208 | Gunner 45847 | apart | orientation |
 |---|---|---|---|
@@ -707,64 +709,84 @@ problem seen from the other end, and seating the gunner is what fixes it.
 | 167792 (−5164.86, 709.828) | **167793** | 0.571 | 2.67035 both |
 | 167922 (−5183.92, 722.26) | **167923** | 0.565 | 5.88176 both |
 
-The pairing is not a guess. Each gunner is the cannon's guid **+1**, so they were entered
-together; the orientations match to all six decimals; every gap is 0.56–0.57 yards; and
-every gunner sits at Z 287.754 against the cannon's 287.48, a uniform 0.274 **above** it.
-Four spawns, four cannons, one each.
+The pairing is not a guess. Each gunner is the cannon's guid **+1**, the orientations match
+to all six decimals, every gap is 0.56–0.57 yards, and every gunner sits a uniform 0.274
+above its cannon. Four spawns, four cannons, one each.
 
-**Nothing seats them today.** `vehicle_template_accessory` and `vehicle_accessory` are
-both empty for 46208 — and for 46185 as well. One of those two tables is the mechanism:
-`vehicle_template_accessory` keyed on entry 46208 covers all four in a single row, and
-every spawn of 46208 is one of these four, so entry scope and guid scope come to the same
-thing here. `vehicle_accessory` keyed on the four guids is the narrower option.
+**The dump settles what the gunners are.** The room holds exactly **seven** 45847: the
+three posted Operatives task 3 wrote up, and these four — and all four come through
+already seated, never standing:
 
-**This is also the cursor fix, and it retires the option list that used to be here.**
-Vehicle **1173 has exactly one seat, 8674**. `Vehicle::Vehicle` counts the seats that
-pass `CanEnterOrExit()` into `UsableSeatNum` and sets `UNIT_NPC_FLAG_SPELLCLICK` when
-that count is non-zero, with the core's own comment reading *"Set or remove correct flags
-based on available seats. Will overwrite db data (if wrong)."* Two things follow:
+    TransportGUID:      Vehicle/0 ... Entry: 46208
+    TransportPosition:  X: -1.0871885  Y: 0  Z: 0.98480594  O: 0
+    VehicleSeatIndex:   0
 
-- **Clearing `UNIT_NPC_FLAG_SPELLCLICK` from the spawn's `npcflag` cannot work.** The
-  constructor recomputes the flag from the seat count on every spawn and overwrites
-  whatever the DB said. That was the first and cheapest option in the old list and it is
-  a dead end.
-- **`Vehicle::AddPassenger` decrements `UsableSeatNum`, and when it reaches zero it
-  removes the flag itself.** With one seat and a gunner in it the count goes to zero, so
-  the cog cursor goes away as a consequence of seating the Operative. No flag edit is
-  needed at all.
+There is no standing 45847 anywhere near a cannon, so the four ground spawns are stand-ins
+for a gunner that belongs in the seat — the same shape task 1 found under 46267 and 42552.
 
-That the cursor appears today is itself the proof that seat 8674 passes
-`CanEnterOrExit()` — the flag is only ever set when the count is above zero. The seat's
-`Flags` in `VehicleSeat.db2` agree, on either of the two readings the collapsed-array
-field mapping allows.
+**The seat index is 0, read rather than deduced.** This section used to say the index
+could not be read off `VehicleSeat.db2` because the collapsed `SeatID` array leaves the
+reader off by one, and would have to be settled with `.npc info` or by trying it. The dump
+gives it outright as `VehicleSeatIndex: 0`. No guessing was needed.
 
-**The gunners inherit emote 214** `EMOTE_STATE_READY_RIFLE` from
-`creature_template_addon` — none of the four has a `creature_addon` row. For a gunner
-that is plausible as it stands, and a seated passenger takes its pose from the seat
-anyway, so leave it until the four have been seen in the seat.
+**The accessory tables are not the mechanism, which is this section's main correction.**
+It previously read "one of those two tables is the mechanism". Three things rule them out:
 
-To do:
-- Seat 167787, 167790, 167793 and 167923 in cannons 167786, 167789, 167792 and 167922.
-- **Confirm the seat index before writing the row.** 8674 is the only seat on the
-  vehicle, but which of `SeatID1`…`SeatID8` holds it decides whether the accessory row
-  says seat 0 or seat 1, and the DB2 reader's field mapping for the collapsed array is
-  off by one — so it cannot be read straight off. `.npc info` on a cannon, or a seat
-  index that simply works in game, settles it.
-- Check `SPELL_CANNON_BURST` still fires. The Sanitron script casts it from the cannon by
-  guid (`cannon->CastSpell(player, SPELL_CANNON_BURST, true)`), and an occupied cannon
-  has a passenger it did not have before.
-- Passenger facing is hardcoded to 0 on seating, so check which way the gunners end up
-  pointing rather than assuming the spawn orientation survives.
-- Leave `unit_flags` 33536 alone unless the cursor is still there after seating.
+- `Vehicle::InstallAccessory` calls `SummonCreature(entry, …)` — it summons a **new**
+  creature. The four authored spawns would go on standing beside their own doubles, so
+  that route costs four deletes before it does anything.
+- It seats through `Unit::HandleSpellClick`, which walks `npc_spellclick_spells` for the
+  vehicle's entry. **46208 has no row there**, so the install would silently do nothing
+  until one was added — and adding one hands players a click path into a cannon that
+  nothing in the dump suggests retail offers.
+- A summon has no spawn id, so `creature_addon` cannot reach it and it would wear 45847's
+  template emote 214 and `SheathState` 2, both of which the dump contradicts.
 
-**This corrects task 3, and task 3 then corrected the rest of it.** That section listed
-six 45847 spawns with no `creature_addon` row and reasoned that they "stand at the
-decontamination stations inside the room", so they should probably take 168120's emote 69.
-Four of those six — 167787, 167790, 167793, 167923 — are these gunners and are nowhere
-near the stations; giving them `EMOTE_STATE_USE_STANDING` would be wrong, and they still
-have no addon row. The other two are not at the stations either: **168075** and **168133**
-sit on Z 287.48 in the north-west corner, 22 yards from 168120 and on the floor above it,
-and they take a stand state rather than an emote. Task 3 has the numbers.
+SmartAI cannot do it either: this core has no `SMART_ACTION` that seats a creature in a
+vehicle seat, which `npc_safe_operative_bearer` already says in its own comment. So the
+script seats the neighbouring spawn itself, casting `VEHICLE_SPELL_RIDE_HARDCODED` with
+**`TRIGGERED_FULL_MASK`** rather than calling `Unit::EnterVehicle` — EnterVehicle passes
+only `TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE`, leaves the whole of
+`Spell::CheckCast` in the way and says nothing when it refuses. Same trap, and the same
+fix, as the carry scene.
+
+The seating retries on a 3s task until the seat reads full, because cannon and gunner are
+both static spawns on one grid with no ordering between them, and because boarding is
+asynchronous — `AddPassenger` queues a `VehicleJoinEvent`, so the seat is still empty when
+the cast returns and there is nothing to read at the call site.
+
+**The gunners' pose is written, and it corrects what this section used to say.** It read
+that emote 214 `EMOTE_STATE_READY_RIFLE` was "plausible as it stands" and should be left
+until the four had been seen in the seat. The dump has them at **`EmoteState` 0,
+`SheatheState` 1, `StandState` 0** — none of it the 214/2 the four inherit from
+`creature_template_addon` for want of a `creature_addon` row. The rifle is stowed and the
+seat does the posing. Guid rows now give all four 0/1/0, the same shape task 3 wrote for
+168075, 168120 and 168133; a guid row replaces the template row outright rather than
+merging, so emote 0 is what clears the inherited 214.
+
+**The facing needs nothing.** `VehicleJoinEvent::Execute` hardcodes `SetFacing(0)`, which
+this section flagged as something to watch — but the seat's own `TransportPosition`
+orientation is **0** as well, and the sniffed gunner's world orientation 3.159045934 is its
+cannon's 3.15905. So the hardcoded facing lands exactly where retail has it, and no
+`PassengerBoarded` override is needed.
+
+**`SPELL_CANNON_BURST` is unaffected.** The Sanitron script finds each cannon by 2D
+distance from a hardcoded position within 1 yard and casts 86080 **from the cannon** at
+the player. A passenger changes neither the cannon's position nor its ability to cast, and
+all four script positions still match their spawn within 0.4 yards.
+
+**The cog cursor goes on its own.** `VehicleJoinEvent::Execute` decrements
+`Vehicle::UsableSeatNum` and clears `UNIT_NPC_FLAG_SPELLCLICK` when the count reaches
+zero, and 1173 has only the one seat. No flag edit, and `unit_flags` 33536 is untouched.
+Worth knowing that clicking a cannon does nothing **today** regardless: with no
+`npc_spellclick_spells` row for 46208, `HandleSpellClick`'s loop body never runs, so the
+cursor has always been an advertisement for a click that was never wired up.
+
+To check in game:
+- All four gunners standing on their cannons rather than beside them, facing along the
+  barrel, with the rifle stowed rather than held ready.
+- No cog cursor on a cannon once its gunner is aboard.
+- Ride the Sanitron through the wash and confirm the cannons still fire at you.
 
 ### 8. Quest text for the Pinned Down chain  — *not started*
 

@@ -2215,6 +2215,65 @@ private:
     uint32 _shots = 0;
 };
 
+// The S.A.F.E. Officer posted in the Loading Room's north-west corner. He never
+// moves and never speaks -- the whole of him is a gesture every few seconds at the
+// two Operatives seated in front of him, which is what makes that corner read as a
+// briefing rather than three NPCs who happen to be standing near each other. His
+// spawn orientation already points him between the pair, so nothing here turns him.
+//
+// This hangs off the spawn rather than off 46025, because the Officer who walks the
+// room's patrol does not do it: he gestures perhaps twice in the time this one gets
+// through fifty, so the two are not the same behaviour and giving the entry a timer
+// would put this one's cadence on a walker that does not want it.
+static constexpr Milliseconds BRIEFING_EMOTE_MIN = Milliseconds(3600);
+static constexpr Milliseconds BRIEFING_EMOTE_MAX = Milliseconds(6100);
+
+// Weighted by repetition rather than by a roll with branches: the talking gesture
+// takes half the list and the other three split the rest, so the corner reads as one
+// man doing most of the talking and occasionally answering himself.
+static constexpr uint32 BRIEFING_EMOTE_COUNT = 6;
+static constexpr uint32 BRIEFING_EMOTES[BRIEFING_EMOTE_COUNT] =
+{
+    EMOTE_ONESHOT_TALK_NO_SHEATHE,
+    EMOTE_ONESHOT_TALK_NO_SHEATHE,
+    EMOTE_ONESHOT_TALK_NO_SHEATHE,
+    EMOTE_ONESHOT_YES,
+    EMOTE_ONESHOT_NO,
+    EMOTE_ONESHOT_QUESTION
+};
+
+struct npc_safe_officer_briefing : public ScriptedAI
+{
+    npc_safe_officer_briefing(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        // The first gesture waits out a full interval too. Starting on zero would put
+        // every restart's first emote on the same tick as everything else that reset
+        // with it, and the officer is meant to be mid-conversation, not starting one.
+        _scheduler.Schedule(BRIEFING_EMOTE_MIN, BRIEFING_EMOTE_MAX, [this](TaskContext task)
+        {
+            // A gesture belongs to the briefing, not to a fight he has been pulled
+            // into. The timer keeps running so he picks the conversation back up
+            // once he is out of combat rather than falling silent for good.
+            if (!me->IsInCombat())
+                me->HandleEmoteCommand(BRIEFING_EMOTES[urand(0, BRIEFING_EMOTE_COUNT - 1)]);
+
+            task.Repeat(BRIEFING_EMOTE_MIN, BRIEFING_EMOTE_MAX);
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -2224,4 +2283,5 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_physicians_assistant_greeter);
     RegisterCreatureAI(npc_target_acquisition_device);
     RegisterCreatureAI(npc_safe_operative_firing_squad);
+    RegisterCreatureAI(npc_safe_officer_briefing);
 }

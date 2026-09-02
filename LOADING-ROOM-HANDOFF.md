@@ -8,7 +8,7 @@ are not started. Each has the reconnaissance it needs written up below.
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_05_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_06_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -308,9 +308,14 @@ template already gives exactly that, so `move_type` stays 0.
 filler inside both is a straight line down an open corridor — none of task 1's furniture
 problem, so pathfinding between nodes is safe here.
 
-**His barking is unrelated to the patrol.** `SMSG_EMOTE` fires on a steady ~4.8s cadence
-right through the walk and does not line up with either pause, so the one-shots in task 3
-are a chance roll on a timer, not part of this route.
+**He barks twice, and the steady cadence is somebody else.** This section previously read
+the ~4.8s stream of `SMSG_EMOTE` as his and concluded only that it did not line up with
+either pause. Split by guid, **168990 emotes twice in the whole run** — one 6 at 20:49:07
+and one 274 at 20:51:33 — while sending 75 splines, so he was visible throughout and those
+two are all there is. The 56 emotes on that steady cadence belong to **167810**, the
+Officer standing still in the north-west corner, who sends no spline at all. Task 3 has
+him. Nothing about the patrol route changes; what changes is that the cadence was never
+evidence about this spawn.
 
 **167812 is deleted**, in `2026_09_01_02_world.sql`. It stood 0.97 yards off point 18 of
 the route above, so once 168990 starts walking the officer passes through his own double.
@@ -447,10 +452,47 @@ One-shot emotes, which are a separate thing from the state and come from `SMSG_E
 
 | Entry | One-shots seen |
 |---|---|
-| 46025 S.A.F.E. Officer | 396 OneShotTalkNoSheathe ×26, 273 OneShotYes ×11, 274 OneShotNo ×11, 6 OneShotQuestion ×10 |
+| 46025 S.A.F.E. Officer | 396 OneShotTalkNoSheathe ×26, 273 OneShotYes ×11, 274 OneShotNo ×11, 6 OneShotQuestion ×10 — but **58 across two spawns, not one**: 56 of them are 167810 and only 2 are the patroller 168990 |
 | 46268 Survivor | 18 OneShotCry ×5, 20 OneShotBeg ×3 |
 | 46267 Rescued Survivor | 1 OneShotTalk ×2, 5 OneShotExclamation ×1, 20 OneShotBeg ×1 |
 | 42552 Physician's Assistant | 25 OneShotPoint ×5 |
+
+**The Officer in the north-west corner gestures on a timer — `npc_safe_officer_briefing`,
+attached in `2026_09_01_05_world.sql`.** All 56 of the 46025 one-shots above are
+**167810**, the Officer standing still beside the two Operatives that task 3 just sat
+down. He sends **no spline of any kind** in the whole run: standing still and gesturing is
+the entirety of what he does.
+
+- **It is a timer, not a chance roll.** Gaps: mean 4.61s, **stdev 0.71**, range 3.59–6.10.
+  A per-tick chance roll gives a geometric spread with stdev near the mean; 0.71 against
+  4.61 is a repeating interval with a small random range. The gaps are in fact tri-modal —
+  3.59–3.70 (×15), 4.78–4.94 (×33), 6.06–6.10 (×5), with two strays at 4.02 and 4.04 —
+  and every cluster is a multiple of about 1.21s. The script rolls flat across
+  3600–6100ms rather than reproducing that quantisation, which is a deliberate
+  simplification: the modes are an artefact of a tick this server does not share.
+- **The gesture and the interval are independent rolls.** Mean gap by preceding emote is
+  4.53–4.90 and by following emote 4.45–4.67 — flat either way. Same shape task 1 found,
+  where the emote is rolled separately from the line.
+- **Weights.** 396 TalkNoSheathe ×26, 273 Yes ×11, 274 No ×10, 6 Question ×9 — the talking
+  gesture takes about half and the other three split the rest. The script holds a six-entry
+  list with 396 in it three times, which is 50/17/17/17 against an observed 46/20/18/16.
+- **Scoped to the spawn, not to 46025.** The patrolling Officer emotes twice in the same
+  251s while fully visible. Attaching this to the entry would put a 4.6s cadence on a
+  walker that does not want it, so it goes on `creature.ScriptName` for 167810 alone —
+  the same per-guid route the firing squads use. 46025 carries no template `AIName`, so
+  nothing is displaced.
+- **He does not turn.** No facing spline anywhere, and his spawn orientation 3.735 is a
+  round **214°** that already points between the two seated Operatives. Nothing in the
+  script touches his facing.
+
+**The Survivor beside him needs no change.** 167777's orientation is **6.03883934** in its
+create block against **6.03884** in `creature` — already exact, and a round **346°** like
+every other authored facing in this room. It points within 11.6° of the Officer, a 0.77
+yard miss across the 3.8 yards between them, and no packet ever turns it further. If it has
+been seen facing the wrong way in game, that is the random wander rather than the
+orientation: 167777 was one of the ten on `MovementType` 1 with a 3 yard wander, which
+`2026_08_31_03_world.sql` already cleared — **and which, like everything else in this task,
+only takes effect on a worldserver restart.**
 
 Anim kits: **45847 → kit 573** (×45), **46363 → kit 983** and kit 0 to clear it,
 **46449 → kit 989**. **None of these is in the Loading Room**, so this task sets no anim

@@ -1,8 +1,9 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Seven tasks. **Tasks 1, 2 and 3 are done** —
-each watched in game and signed off. **Task 4 is closed as not relevant.** The remaining
-three are not started, and each has the reconnaissance it needs written up below.
+each watched in game and signed off. **Task 4 is closed as not relevant.** **Task 5 is
+written and waiting on an in-game check.** The remaining two are not started, and each
+has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
@@ -575,24 +576,63 @@ has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 7
 not be capped on both sides as it stands; and that the spawns must be identified from
 `.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
-### 5. Sanitron 500 reusable by the next player  — *not started*
+### 5. Sanitron 500 reusable by the next player  — *written, awaiting an in-game check*
 
-`npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`.
+`npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Script
+only, no SQL — the next free index is still `2026_09_01_06_world.sql`.
 
-At the end of the ride, phase 10 calls `me->setDeathState(JUST_DIED)`. The spawn's
-`spawntimesecs` is **300**, so the machine is gone for five minutes and the next player
-on the quest finds nothing. `uiRespawnTimer` is initialised to 6000 in `Reset()` and
-then **never read anywhere in `UpdateAI`** — the intended quick respawn was written and
-never wired up.
+**The machine keeps dying, because dying is the ending.** `creature_text` group 2 is
+"Warning, system overload. Malfunction imminent!" and phase 9 casts 30934 on itself, so
+the wash finishes with the Sanitron blowing up. Driving it home in one piece instead
+would have thrown that away. What was wrong was only how long it stayed gone.
 
-To do:
-- Decide between reviving on a short timer and not killing it at all — after
-  `RemoveAllPassengers()` the machine could simply return to its spawn point and reset
-  `uiPhase`, which avoids the corpse entirely.
-- Either way `uiRespawnTimer` should be used or removed; leaving a dead field is what
-  hid this.
-- Three spawns share the entry (168370, 168381, 168860), so whichever way it goes must
-  be per-creature state, not static.
+Three things were in the way, and the first is the one the section originally described:
+
+- **`spawntimesecs` is 300 on all three spawns**, so the wreck was gone for five minutes.
+  `me->DespawnOrUnsummon(0, SANITRON_RESPAWN_DELAY)` replaces `setDeathState(JUST_DIED)`
+  in phase 10. `Creature::ForcedDespawn` swaps `m_respawnDelay` for the six seconds passed
+  in, drops `m_corpseDelay` to zero, kills the creature and calls `RemoveCorpse(false)`,
+  which also relocates it back to its spawn point. So the wreck goes with the explosion
+  rather than lying on the walkway, and `Creature::Respawn` runs `AI()->Reset()` six
+  seconds later, which is what puts `uiPhase` back to 0. All the state is per AI instance
+  already, so the three spawns do not touch each other.
+
+- **`uiRespawnTimer` could never have worked where it was**, which is why it is gone
+  rather than wired up. `Creature::Update` only ticks `UpdateAI` while the creature is
+  alive; once phase 10 has killed the machine nothing in the AI runs again until it is
+  back. A countdown inside `UpdateAI` cannot bring a dead creature back by construction,
+  so the delay has to be handed to the despawn call instead.
+
+- **The respawned machine had no cursor, and this is the half that would have made a
+  quick respawn useless anyway.** `Creature::setDeathState(JUST_RESPAWNED)` writes
+  `UNIT_NPC_FLAGS` back from `ObjectMgr::ChooseCreatureFlags`, which reads
+  `creature_template.npcflag` and then `creature.npcflag` — **both are 0** for 46185 and
+  for all three spawns. The spell click flag is not in either table: `Vehicle::Vehicle`
+  sets it once at construction from the usable seat count, and construction does not
+  happen again on a respawn. `Vehicle::Reset` does not set it either — it only reapplies
+  immunities and accessories. A `JustRespawned` override puts
+  `UNIT_NPC_FLAG_SPELLCLICK` back. This is the same flag task 7 is about from the other
+  end.
+
+**A player who leaves the seat mid-wash also stranded it**, and that is fixed in the same
+breath because it is the same complaint. `UpdateAI` returns on an empty seat, so a logout
+or anything else that takes the passenger off froze `uiPhase` where it stood and left the
+machine parked out on the walkway — and the next player to click it resumed half way
+through the sequence, at the wrong place. `PassengerBoarded(..., apply = false)` now sends
+it through the same despawn-and-come-back path, guarded on `uiPhase >= 10` so the end of
+the run taking its own passenger off does not trip it. The despawn is delayed a second
+rather than called inline, because the hook fires from inside
+`Vehicle::RemovePassenger` and the core's own comments warn about scripts that despawn
+from there.
+
+To check in game:
+- Ride it through to the explosion and confirm the machine is back at its spawn point
+  about six seconds later, and that it is **clickable again** — that is the flag half.
+- Ride a second time straight after to confirm the sequence starts from the beginning.
+- Log out mid-wash, or leave the seat, and confirm it comes back rather than staying on
+  the walkway.
+- The dump has no ride in it — all three 46185 spawns appear only as idle create blocks —
+  so none of this had a recording to check against; it is read off the core.
 
 ### 6. Sanitron refuses a player not on the quest  — *not started*
 

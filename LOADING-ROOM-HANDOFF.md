@@ -1,14 +1,14 @@
 # New Tinkertown — the Loading Room
 
 Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2 and 3 are done** —
-each watched in game and signed off. **Task 4 is closed as not relevant.** **Task 5 is
-written and waiting on an in-game check.** The remaining three are not started, and each
+each watched in game and signed off. **Task 4 is closed as not relevant.** **Tasks 5 and 6
+are written and waiting on an in-game check.** The remaining two are not started, and each
 has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
 Branch: `new-tinkertown-pass`. Commit straight onto it.
-Next free SQL index: `sql/ashamane/world/2026_09_01_06_world.sql`.
+Next free SQL index: `sql/ashamane/world/2026_09_01_07_world.sql`.
 
 Source dump: `/home/serverproject/dumps/dump_12.1.0.69497_2026-08-31_20-47-31-loading-room.pkt`
 (build 12.1.0.69497, 20,440 packets, ~3m of the Loading Room).
@@ -579,7 +579,7 @@ not be capped on both sides as it stands; and that the spawns must be identified
 ### 5. Sanitron 500 reusable by the next player  — *written, awaiting an in-game check*
 
 `npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Script
-only, no SQL — the next free index is still `2026_09_01_06_world.sql`.
+only, no SQL — task 6 took `2026_09_01_06_world.sql`.
 
 **The machine keeps dying, because dying is the ending.** `creature_text` group 2 is
 "Warning, system overload. Malfunction imminent!" and phase 9 casts 30934 on itself, so
@@ -634,25 +634,64 @@ To check in game:
 - The dump has no ride in it — all three 46185 spawns appear only as idle create blocks —
   so none of this had a recording to check against; it is read off the core.
 
-### 6. Sanitron refuses a player not on the quest  — *not started*
+### 6. Sanitron refuses a player not on the quest  — *written, awaiting an in-game check*
 
-`OnGossipHello` already gates on
-`GetQuestStatus(QUEST_DECONTAMINATION) == QUEST_STATUS_INCOMPLETE`, so the gossip path
-is correct. **The spell-click path is not gated at all**, and it bypasses gossip
-entirely:
+`2026_09_01_06_world.sql`. One `conditions` row, no script change. Hand-applied, so the
+updater will run it again on the next start; it is written to survive that, and applying
+it twice was checked to leave exactly one row.
 
-    npc_spellclick_spells: npc_entry 46185, spell_id 125095, cast_flags 1, user_type 1
+`OnGossipHello` already gated on
+`GetQuestStatus(QUEST_DECONTAMINATION) == QUEST_STATUS_INCOMPLETE`, so the gossip path was
+correct. The spell click that boards the vehicle bypasses gossip entirely and had no
+`conditions` row at all, so any player could click straight into the seat:
 
-There is **no `conditions` row** for it — nothing at `SourceTypeOrReferenceId` 18,
-`SourceGroup` 46185. Any player can click straight into the seat.
+    (18, 46185, 125095, 0, 0, 9, 0, 27635, 0, 0, 0, 0, 0, '', 'Required quest active for spellclick')
 
-To do:
-- Add the condition: source type **18** (`CONDITION_SOURCE_TYPE_SPELL_CLICK_EVENT`),
-  `SourceGroup` 46185, `SourceEntry` 125095, condition type **9**
-  (`CONDITION_QUESTTAKEN`), `ConditionValue1` 27635.
-- Read spell 125095's Wowhead page before the id goes into the file.
-- The file must survive being applied twice: hand-applying skips the `updates` row, so
-  the updater will run it again.
+Source type **18** `CONDITION_SOURCE_TYPE_SPELL_CLICK_EVENT`, condition type **9**
+`CONDITION_QUESTTAKEN`, both read off `ConditionMgr.h` rather than assumed. Spell 125095 is
+**Ride Vehicle Hardcoded**, a control-vehicle spell, checked on its Wowhead page before the
+id went into the file. `ConditionMgr` stores the row as
+`SpellClickEventConditionStore[SourceGroup][SourceEntry]`, so the entry goes in the group
+and the spell in the entry, which is the way round the row above is written.
+
+**The condition matches the gossip gate exactly rather than approximately.**
+`CONDITION_QUESTTAKEN` evaluates to `condMeets = (status == QUEST_STATUS_INCOMPLETE)` — the
+same single test the script makes — so the two doors cannot disagree about who gets in.
+
+**It also takes the cog cursor away, and that is the half worth testing.** The condition is
+read in two places, not one:
+
+- `Unit::HandleSpellClick` skips the click outright — the refusal.
+- `Player::CanSeeSpellClickOn`, which `Unit::BuildValuesUpdate` calls to mask
+  `UNIT_NPC_FLAG_SPELLCLICK` out of `UNIT_NPC_FLAGS` **per target**. A player who fails the
+  condition is never sent the flag and so never gets a cursor.
+
+That is the same flag tasks 5 and 7 are about from their own ends, and it matters that this
+is a per-player mask at packet-build time rather than anything cleared on the creature: it
+does not disturb the `JustRespawned` flag restore task 5 added, nor the seat-count
+arithmetic task 7 relies on.
+
+The per-target masking is the one thing to watch in game. The flag is stripped as the
+values block is built, so a player who accepts the quest while standing next to the machine
+sees the cursor appear only once the Sanitron next sends them a values update. If it does
+not show the instant the quest is accepted, step out of range and back before treating it
+as a failure.
+
+**Nothing kicks a rider mid-wash.** Phase 8 calls `player->CompleteQuest(QUEST_DECONTAMINATION)`,
+which flips the status to complete and makes this condition false — but the condition is
+only read on boarding and the player is seated well before then. Phases 9 and 10 blow the
+machine up and empty the seat exactly as before.
+
+Every input the load-time validation checks is present: `creature_template` 46185, quest
+27635, and spell 125095 resolving from the DB2 store. The hotfixes `spell` table holds only
+four override rows, so 125095 being absent from it means nothing — and `DBErrors.log`,
+which does record this class of fault, carries no complaint for either id.
+
+To check in game:
+- On the quest: the cursor is there and the ride starts as before.
+- Never taken it, and again after handing it in: no cog cursor, and clicking does nothing.
+- `.reload conditions` picks the row up. Unlike the `creature_addon` work in tasks 2 and 3,
+  this one needs no worldserver restart.
 
 ### 7. Clean Cannon X-2 — put its gunner in it  — *not started*
 

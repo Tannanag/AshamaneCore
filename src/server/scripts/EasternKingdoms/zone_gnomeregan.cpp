@@ -37,6 +37,7 @@ EndScriptData */
 enum GnomeCreatureIds
 {
     NPC_DECONTAMINATION_BUNNY = 46165,
+    NPC_SANITRON_5000         = 46185,
     NPC_CLEAN_CANNON          = 46208,
     NPC_SAFE_TECHNICAN        = 46230,
     NPC_NEVIN_TWISTWRENCH     = 46293,
@@ -340,7 +341,18 @@ public:
                                 uiTimer = 1000;
                                 break;
                             case 8:
-                                player->CompleteQuest(QUEST_DECONTAMINATION);
+                                // TalkedToCreature rather than CompleteQuest. 27635's one
+                                // objective is a TALKTO on 46185 -- "Decontamination Process
+                                // started" -- and CompleteQuest sets the quest status without
+                                // ever crediting it, so the objective stayed at 0/1 and the
+                                // player got no credit for the wash.
+                                //
+                                // TalkedToCreature fills the objective, sends the client its
+                                // SendQuestUpdateAddCredit so the log ticks over, and then
+                                // completes the quest itself through CanCompleteQuest. The
+                                // gate it checks passes here because ObjectMgr gives any
+                                // quest with a TALKTO objective QUEST_SPECIAL_FLAGS_SPEAKTO.
+                                player->TalkedToCreature(NPC_SANITRON_5000, me->GetGUID());
                                 Talk(1);
                                 me->GetMotionMaster()->MovePoint(5, -5175.61f, 700.38f, 290.89f);
                                 ++uiPhase;

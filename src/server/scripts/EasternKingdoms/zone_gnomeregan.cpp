@@ -75,6 +75,16 @@ enum GnomeMoves
 // Room around 37 seconds in, with the delay counted.
 float const SPEED_IMUN_AGENT = 6.4f;
 
+// The wash ends with the machine blowing itself up, so it has to come back for
+// the next player rather than sit out creature.spawntimesecs, which is 300 on
+// all three spawns. A timer inside the AI cannot do it: Creature::Update only
+// ticks UpdateAI while the creature is alive, which is why the uiRespawnTimer
+// this replaces was initialised in Reset() and then never read anywhere. The
+// delay is handed to Creature::ForcedDespawn instead, which also takes the
+// wreck away with the explosion instead of leaving it lying there for the
+// corpse decay time.
+Seconds const SANITRON_RESPAWN_DELAY = Seconds(6);
+
 Position const SpawnPosition = { -4981.25f, 780.992f, 288.485f, 3.316f };
 
 class npc_nevin_twistwrench : public CreatureScript
@@ -168,8 +178,38 @@ public:
         void Reset() override
         {
             uiTimer = 0;
-            uiRespawnTimer = 6000;
             uiPhase = 0;
+        }
+
+        void JustRespawned() override
+        {
+            ScriptedAI::JustRespawned();
+
+            // Creature::setDeathState puts UNIT_NPC_FLAGS back to what
+            // ObjectMgr::ChooseCreatureFlags reads off the template and the spawn
+            // row, and both of those are 0 here. The spell click flag the machine
+            // is clicked with is not in either: Vehicle::Vehicle sets it once at
+            // creation, from the seat count. Without putting it back the respawned
+            // Sanitron has no cursor and no one can ride it again.
+            if (_vehicle->HasEmptySeat(0))
+                me->SetFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_SPELLCLICK);
+        }
+
+        void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+        {
+            // A player who leaves the seat part way through the wash -- logging
+            // out, or being pulled off it -- would otherwise strand the machine.
+            // UpdateAI returns on an empty seat, so uiPhase stops where it was
+            // and the Sanitron is left standing out on the walkway for the next
+            // player to board half way through the sequence. Phase 10 is the end
+            // of the run taking its own passenger off, which is not that.
+            if (apply || !passenger->IsPlayer() || uiPhase >= 10)
+                return;
+
+            // Delayed a second rather than despawned from inside
+            // Vehicle::RemovePassenger, which is still working on the seat it is
+            // calling us about.
+            me->DespawnOrUnsummon(1 * IN_MILLISECONDS, SANITRON_RESPAWN_DELAY);
         }
 
         void GetTargets()
@@ -288,7 +328,7 @@ public:
                                 break;
                             case 10:
                                 _vehicle->RemoveAllPassengers();
-                                me->setDeathState(JUST_DIED);
+                                me->DespawnOrUnsummon(0, SANITRON_RESPAWN_DELAY);
                                 ++uiPhase;
                                 uiTimer = 0;
                                 break;
@@ -308,7 +348,6 @@ public:
         ObjectGuid CannonGUID[4] = {};
 
         uint32 uiTimer;
-        uint32 uiRespawnTimer;
         uint8 uiPhase;
     };
 

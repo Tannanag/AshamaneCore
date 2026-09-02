@@ -576,7 +576,7 @@ has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 7
 not be capped on both sides as it stands; and that the spawns must be identified from
 `.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
-### 5. Sanitron 500 reusable by the next player  — *done, tested in game*
+### 5. Sanitron 500 reusable by the next player  — *done, tested in game; one fix since, awaiting a check*
 
 `npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Watched
 in game and signed off. Script only, no SQL — task 6 took `2026_09_01_06_world.sql`.
@@ -634,6 +634,42 @@ What was checked in game:
 The dump has no ride in it — all three 46185 spawns appear only as idle create blocks — so
 none of this had a recording to check against; it was read off the core and confirmed in
 game instead.
+
+**A used Sanitron came back grounded, and that is fixed — awaiting a check.** Reported in
+game after the sign-off: a machine that had been ridden sat on the walkway instead of
+hovering, while the two nobody had touched still hovered. The despawn this task added is
+what caused it, so it belongs here rather than as a task of its own.
+
+46185 is `InhabitType` **4**, air only, so the hover is not an animation — it is
+`Creature::UpdateMovementFlags` handing out `MOVEMENTFLAG_DISABLE_GRAVITY` every tick
+(Creature.cpp:2893, taking the `SetDisableGravity(true)` branch because the template has no
+`INHABIT_GROUND`). The despawn poisons the flag it tests:
+
+- `DespawnOrUnsummon` goes through `Creature::ForcedDespawn`, which kills the machine
+  first, and `setDeathState` JUST_DIED drops a flying corpse with `MotionMaster::MoveFall`
+  — whose first act is `SetFall(true)`. `RemoveCorpse` follows immediately and only calls
+  `StopMoving`, so the spline ends and the flag does not.
+- The machine respawns still flagged as falling. `UpdateMovementFlags` grants
+  disable-gravity only `&& !IsFalling()`, so it takes the else branch and the Sanitron
+  drops to the floor. Once it is on the floor `isInAir` is false, which does clear the fall
+  at line 2906 — but it also means the airborne test can never pass again. The machine is
+  grounded for good rather than flickering.
+
+The cure is `me->SetFall(false)` with `me->SetDisableGravity(true)` in `Reset()`.
+`Creature::Respawn` calls `setDeathState(JUST_RESPAWNED)` at Creature.cpp:1919 and
+`AI()->Reset()` at 1935, so it lands last; the next tick then sees an airborne creature
+that is not falling and gives the gravity back on its own, and setting it directly means
+the first frame after the respawn is already right. It covers the `PassengerBoarded`
+despawn as well, since every respawn runs `Reset`.
+
+**This is the second creature in the zone to hit it** — `npc_target_acquisition_device`
+has the same two lines and the long write-up of the deadlock. The rule it gives is worth
+applying before it bites a third time: **adding a despawn to a creature with
+`InhabitType` air needs those two lines in the same change.**
+
+Needs a worldserver restart for the new binary. To check: ride one through to the
+explosion and confirm it is hovering when it comes back, at the same height as the two
+that have not been used.
 
 ### 6. Sanitron refuses a player not on the quest  — *done, tested in game*
 

@@ -1,9 +1,8 @@
 # New Tinkertown — the Loading Room
 
-Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3 and 6 are done** —
-each watched in game and signed off. **Task 4 is closed as not relevant.** **Task 5 is
-written and waiting on an in-game check.** The remaining two are not started, and each
-has the reconnaissance it needs written up below.
+Working document for the Loading Room pass. Eight tasks. **Tasks 1, 2, 3, 5 and 6 are
+done** — each watched in game and signed off. **Task 4 is closed as not relevant.** The
+remaining two are not started, and each has the reconnaissance it needs written up below.
 
 A task is only marked done here once it has been checked in game and called done.
 
@@ -576,10 +575,10 @@ has 45847 and 46391 but **not 46363**, so the 46363 cluster out at (−5101.7, 7
 not be capped on both sides as it stands; and that the spawns must be identified from
 `.npc info`'s DB GUID, because `.guid` returns a runtime counter.
 
-### 5. Sanitron 500 reusable by the next player  — *written, awaiting an in-game check*
+### 5. Sanitron 500 reusable by the next player  — *done, tested in game*
 
-`npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Script
-only, no SQL — task 6 took `2026_09_01_06_world.sql`.
+`npc_sanitron_5000` in `src/server/scripts/EasternKingdoms/zone_gnomeregan.cpp`. Watched
+in game and signed off. Script only, no SQL — task 6 took `2026_09_01_06_world.sql`.
 
 **The machine keeps dying, because dying is the ending.** `creature_text` group 2 is
 "Warning, system overload. Malfunction imminent!" and phase 9 casts 30934 on itself, so
@@ -625,14 +624,15 @@ rather than called inline, because the hook fires from inside
 `Vehicle::RemovePassenger` and the core's own comments warn about scripts that despawn
 from there.
 
-To check in game:
-- Ride it through to the explosion and confirm the machine is back at its spawn point
-  about six seconds later, and that it is **clickable again** — that is the flag half.
-- Ride a second time straight after to confirm the sequence starts from the beginning.
-- Log out mid-wash, or leave the seat, and confirm it comes back rather than staying on
-  the walkway.
-- The dump has no ride in it — all three 46185 spawns appear only as idle create blocks —
-  so none of this had a recording to check against; it is read off the core.
+What was checked in game:
+- Ridden through to the explosion: the machine is back at its spawn point about six
+  seconds later and **clickable again** — that is the flag half.
+- Ridden a second time straight after: the sequence starts from the beginning.
+- Seat left mid-wash: it comes back rather than staying on the walkway.
+
+The dump has no ride in it — all three 46185 spawns appear only as idle create blocks — so
+none of this had a recording to check against; it was read off the core and confirmed in
+game instead.
 
 ### 6. Sanitron refuses a player not on the quest  — *done, tested in game*
 

@@ -2384,6 +2384,152 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum SafeGuide
+{
+    NPC_SAFE_GUIDE_MAGE                 = 47351,
+    QUEST_THE_FUTURE_OF_GNOMEREGAN_MAGE = 26197,
+
+    SAY_GUIDE_FOLLOW                    = 0,
+    SAY_GUIDE_INTRODUCE                 = 1
+};
+
+// 47351 has no spawn anywhere. It is created when the quest is accepted, walks the
+// player to their class trainer and unsummons on arrival, so the route below lives in
+// the script rather than in `waypoints`: there is no guid for a path_id to hang off.
+//
+// The guide appears here, a few yards east of Nevin Twistwrench. The hunter has its
+// own guide entry walking to its own trainer and it starts from this same spot, so
+// the position belongs to the summon rather than to either class.
+static Position const SafeGuideSummonPos = { -5196.80f, 475.03f, 388.55f, 0.0f };
+
+// The walk to Bipsi Frostflinger: nine legs, 129 yards, about 52 seconds.
+//
+// Nothing here sets a speed. 47351 carries speed_walk 1, which is the 2.5 yd/s these
+// legs are timed at, and SetSpeed would not help in any case -- it takes an absolute
+// yd/s on this core, so SetSpeed(MOVE_WALK, 1.0f) would crawl at 1 yard a second
+// rather than leave the walk alone.
+static Position const SafeGuideMagePath[] =
+{
+    { -5177.57f, 476.61f, 388.38f, 0.0f },
+    { -5164.87f, 478.95f, 389.93f, 0.0f },
+    { -5155.42f, 470.17f, 390.68f, 0.0f },
+    { -5146.19f, 459.63f, 392.42f, 0.0f },
+    { -5130.46f, 450.37f, 394.94f, 0.0f },
+    { -5116.67f, 453.45f, 398.91f, 0.0f },
+    { -5105.66f, 458.72f, 402.41f, 0.0f },
+    { -5093.27f, 457.52f, 405.38f, 0.0f },
+    { -5087.58f, 448.46f, 409.12f, 0.0f }
+};
+
+// The last point stops 2.8 yards short of Bipsi's spawn, which leaves the guide
+// looking down the path it just walked. This turns it to face her for the
+// introduction.
+static constexpr float SAFE_GUIDE_MAGE_FACING = 5.533f;
+
+// The pauses either side of the walk. The guide stands still for a moment after it
+// appears, speaks, and only then sets off.
+static constexpr Milliseconds SUMMON_TO_FOLLOW_LINE = Milliseconds(3000);
+static constexpr Milliseconds SUMMON_TO_FIRST_STEP  = Milliseconds(6900);
+static constexpr Milliseconds ARRIVE_TO_UNSUMMON    = Milliseconds(1300);
+
+// Safety net, well clear of the 52-second walk. It only matters if a leg never
+// reports back, which would otherwise leave the guide standing in the camp for good.
+static constexpr uint32 SAFE_GUIDE_LIFETIME = 3 * MINUTE * IN_MILLISECONDS;
+
+// The guide that walks a new mage from Nevin Twistwrench to Bipsi Frostflinger after
+// The Future of Gnomeregan is accepted.
+struct npc_safe_guide : public ScriptedAI
+{
+    npc_safe_guide(Creature* creature) : ScriptedAI(creature), _leg(0) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Player* player = summoner ? summoner->ToPlayer() : nullptr;
+        if (!player)
+        {
+            // Nothing else summons this entry. Without the player there is nobody to
+            // address or to face, and walking the route anyway would read as a stray
+            // NPC wandering out of the camp on its own.
+            TC_LOG_ERROR("scripts.ai", "npc_safe_guide: summoned without a player summoner, despawning");
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _playerGuid = player->GetGUID();
+        me->SetWalk(true);
+        me->SetFacingToObject(player);
+
+        _scheduler.Schedule(SUMMON_TO_FOLLOW_LINE, [this](TaskContext /*task*/)
+        {
+            Talk(SAY_GUIDE_FOLLOW, ObjectAccessor::GetPlayer(*me, _playerGuid));
+        });
+
+        _scheduler.Schedule(SUMMON_TO_FIRST_STEP, [this](TaskContext /*task*/)
+        {
+            WalkTo(0);
+        });
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE || id != _leg)
+            return;
+
+        if (++_leg < uint32(std::extent<decltype(SafeGuideMagePath)>::value))
+        {
+            WalkTo(_leg);
+            return;
+        }
+
+        me->SetFacingTo(SAFE_GUIDE_MAGE_FACING);
+        Talk(SAY_GUIDE_INTRODUCE, ObjectAccessor::GetPlayer(*me, _playerGuid));
+        me->DespawnOrUnsummon(ARRIVE_TO_UNSUMMON);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+    // The guide walks through a camp that is permanently trading fire with the
+    // sludges to its west. It takes no part in that.
+    void AttackStart(Unit* /*who*/) override { }
+    void EnterCombat(Unit* /*who*/) override { }
+
+private:
+    void WalkTo(uint32 leg)
+    {
+        me->GetMotionMaster()->MovePoint(leg, SafeGuideMagePath[leg]);
+    }
+
+    TaskScheduler _scheduler;
+    ObjectGuid _playerGuid;
+    uint32 _leg;
+};
+
+// The quest is accepted at Nevin Twistwrench, but the hook hangs off the player
+// rather than off him: the player is the summoner, and Nevin himself does nothing
+// here, so this leaves his creature_template.ScriptName free for later work.
+class player_safe_guide_summoner : public PlayerScript
+{
+public:
+    player_safe_guide_summoner() : PlayerScript("player_safe_guide_summoner") { }
+
+    void OnQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (!quest || quest->GetQuestId() != QUEST_THE_FUTURE_OF_GNOMEREGAN_MAGE)
+            return;
+
+        // Deliberately visible to everyone. Making it visible to the summoner alone
+        // works -- the flag has to be set through a Creature* afterwards, because
+        // TempSummon shadows it and the argument to SummonCreature is inert -- but
+        // nothing observed says the guide is private, and an invisible guide is a
+        // much worse failure than an extra one walking past.
+        player->SummonCreature(NPC_SAFE_GUIDE_MAGE, SafeGuideSummonPos,
+            TEMPSUMMON_TIMED_DESPAWN, SAFE_GUIDE_LIFETIME);
+    }
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -2395,4 +2541,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_safe_operative_firing_squad);
     RegisterCreatureAI(npc_safe_officer_briefing);
     RegisterCreatureAI(npc_clean_cannon_x2);
+    RegisterCreatureAI(npc_safe_guide);
+    new player_safe_guide_summoner();
 }

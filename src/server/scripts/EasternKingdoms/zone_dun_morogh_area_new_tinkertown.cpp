@@ -2530,6 +2530,309 @@ public:
     }
 };
 
+enum GnomereganRecruitColumn
+{
+    NPC_AMMO_CART           = 43273,
+    NPC_AMMO_CART_BUNNY     = 43279,
+
+    // 43276 carries creature_template.VehicleId 947, whose single seat is VehicleSeat
+    // 8172, and 43273 carries VehicleId 946, whose single seat is VehicleSeat 8171. Seat
+    // 0 is that seat in both cases, and the load is a stack of two: the cart rides the
+    // recruit and the bunny rides the cart. Both are seated rather than followed, which
+    // is why 43276 and 43273 are Vehicle guids and only the bunny on top is a Creature
+    // one.
+    SEAT_AMMO_CART          = 0,
+    SEAT_CART_BUNNY         = 0,
+
+    POINT_COLUMN_END        = 1
+};
+
+// A run is one recruit's walk from its post to the end of its route, where it is gone.
+// The next leaves a few seconds later. The three routes are 188, 191 and 257 yards, so at
+// walk speed the columns come round every 81, 83 and 109 seconds.
+static constexpr Milliseconds COLUMN_BOARD_TO_WALK = Milliseconds(1000);
+static constexpr Seconds COLUMN_RESPAWN_DELAY      = Seconds(6);
+
+// The three routes out of town. Element 0 of each is that route's own start, because
+// MoveSplineInit::Launch overwrites element 0 with the creature's real position -- the
+// value there is never used as a destination, it only records where the path begins, and
+// it is also what ColumnFor matches a recruit against.
+//
+// Two columns take the road south and split near the bottom of it; the third takes the
+// road southwest, out of the zone. None of them comes back.
+Position const RecruitColumnSouthA[] =
+{
+    { -5128.630f, 441.328f, 396.082f },
+    { -5124.340f, 416.957f, 396.615f },
+    { -5128.760f, 401.816f, 396.609f },
+    { -5127.800f, 377.835f, 396.609f },
+    { -5127.210f, 349.245f, 395.728f },
+    { -5120.200f, 322.993f, 394.139f },
+    { -5102.690f, 308.052f, 394.139f },
+    { -5091.250f, 295.217f, 394.224f },
+    { -5079.630f, 296.405f, 395.319f },
+    { -5064.680f, 291.533f, 393.850f }
+};
+
+Position const RecruitColumnSouthB[] =
+{
+    { -5140.950f, 454.278f, 393.619f },
+    { -5122.810f, 416.710f, 396.640f },
+    { -5126.820f, 401.288f, 396.609f },
+    { -5125.980f, 377.427f, 396.609f },
+    { -5124.610f, 348.917f, 395.822f },
+    { -5117.300f, 323.821f, 394.141f },
+    { -5099.250f, 310.688f, 394.140f },
+    { -5088.410f, 299.245f, 394.264f },
+    { -5079.270f, 284.849f, 395.066f }
+};
+
+Position const RecruitColumnSouthwest[] =
+{
+    { -5184.940f, 467.078f, 388.518f },
+    { -5197.280f, 447.616f, 388.895f },
+    { -5219.020f, 426.450f, 390.290f },
+    { -5233.010f, 416.986f, 391.018f },
+    { -5249.200f, 407.344f, 391.821f },
+    { -5264.790f, 397.693f, 392.374f },
+    { -5285.840f, 387.894f, 392.603f },
+    { -5311.000f, 381.054f, 393.019f },
+    { -5339.550f, 373.922f, 393.717f },
+    { -5351.480f, 362.726f, 394.688f },
+    { -5362.610f, 342.663f, 394.811f },
+    { -5364.850f, 310.828f, 394.135f }
+};
+
+struct RecruitColumn
+{
+    Position const* nodes;
+    size_t          size;
+};
+
+static RecruitColumn const RecruitColumns[] =
+{
+    { RecruitColumnSouthA,     std::extent<decltype(RecruitColumnSouthA)>::value     },
+    { RecruitColumnSouthB,     std::extent<decltype(RecruitColumnSouthB)>::value     },
+    { RecruitColumnSouthwest,  std::extent<decltype(RecruitColumnSouthwest)>::value  }
+};
+
+// Which route a recruit walks comes from where it stands rather than from its guid, so
+// moving a spawn in the database moves it onto the matching column and adding a fourth
+// post is a database change with no script change behind it. Five yards is wide enough to
+// survive a spawn nudged off its mark and far narrower than the 12 yards separating the
+// two southern posts.
+static RecruitColumn const* ColumnFor(Position const& home)
+{
+    for (RecruitColumn const& column : RecruitColumns)
+        if (home.GetExactDist2d(&column.nodes[0]) < 5.0f)
+            return &column;
+
+    return nullptr;
+}
+
+// Map::SummonCreature applies visibleBySummonerOnly before AddToMap, and
+// WorldObject::CanSeeOrDetect only exempts the summoner, so a creature's summon flagged
+// this way is drawn by nobody at all. These two are the on and off. They go through a
+// Creature* deliberately: TempSummon redeclares m_visibleBySummonerOnly and its accessors,
+// shadowing WorldObject's, so the argument to SummonCreature writes a copy that
+// CanSeeOrDetect never reads.
+static void ConcealSummon(Creature* summon)
+{
+    summon->SetVisibleBySummonerOnly(true);
+    summon->UpdateObjectVisibility();
+}
+
+static void RevealSummon(Creature* summon)
+{
+    summon->SetVisibleBySummonerOnly(false);
+    summon->UpdateObjectVisibility();
+}
+
+// A Gnomeregan Recruit hauling an ammo cart out of New Tinkertown. It takes on its load at
+// its post, walks one of the three routes above, and despawns where the route ends; the
+// respawn brings the next one and the run starts over.
+//
+// Not SmartAI, and not a waypoint path either. SMART_ACTION has no way to seat a creature
+// in a vehicle seat, and a creature_addon path would loop -- WaypointMovementGenerator
+// advances (i_currentNode + 1) % size and has no end -- so the recruit would turn round at
+// the bottom of the road and walk its load back into town.
+struct npc_gnomeregan_recruit_column : public ScriptedAI
+{
+    npc_gnomeregan_recruit_column(Creature* creature) : ScriptedAI(creature),
+        _column(ColumnFor(creature->GetHomePosition())) { }
+
+    // The road passes the Crushcog line, and a recruit that stops to fight never finishes
+    // its run: a victim means ChaseMovementGenerator, which takes MOTION_SLOT_ACTIVE off
+    // the walk, so the arrival that ends the run never comes and the recruit is left
+    // standing wherever the fight stopped it, still loaded. REACT_PASSIVE alone does not
+    // cover it -- AttackStart is reachable without it, from another AI, an assist or a
+    // forced target -- so the override makes the AI structurally unable to take one.
+    void AttackStart(Unit* /*who*/) override { }
+
+    // REACT_PASSIVE already makes CreatureAI::MoveInLineOfSight return without aggroing,
+    // so this changes no behaviour. It only stops the scan running against every unit on a
+    // route that crosses the whole zone.
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        me->SetReactState(REACT_PASSIVE);
+
+        // A vehicle with a free seat advertises itself as clickable: Vehicle::Install sets
+        // UNIT_NPC_FLAG_SPELLCLICK when any seat is usable and only VehicleJoinEvent takes
+        // it off again. Neither 43276 nor 43273 has an npc_spellclick_spells row, so the
+        // cog cursor the client draws in the meantime offers an interaction that does not
+        // exist.
+        ClearVehicleSpellClick(me);
+
+        // Reset runs on respawn, and on anything that cuts a run short -- a grid unload, a
+        // .reload. Without this the load from the abandoned run is left behind.
+        DespawnLoad();
+
+        if (!_column)
+        {
+            TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: %s is not within five yards of any column start and will not move",
+                me->GetGUID().ToString().c_str());
+            return;
+        }
+
+        // Hidden while it is assembled, then handed over finished. Both seats are filled by
+        // a VehicleJoinEvent a tick after the cast and the client plays the seat's enter
+        // animation over the top, so a visible cart is seen standing on the ground and
+        // climbing onto the recruit's back.
+        if (TempSummon* cart = me->SummonCreature(NPC_AMMO_CART, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
+        {
+            ConcealSummon(cart);
+            _cart = cart->GetGUID();
+            BoardVehicle(cart, me, SEAT_AMMO_CART);
+
+            // Vehicle::Install runs inside Creature::AddToWorld, so the cart has a kit of
+            // its own by the time SummonCreature returns and can take the bunny straight
+            // away. The bunny is summoned by the recruit rather than by the cart so that
+            // one owner despawns the whole load.
+            if (TempSummon* bunny = me->SummonCreature(NPC_AMMO_CART_BUNNY, me->GetPosition(), TEMPSUMMON_MANUAL_DESPAWN))
+            {
+                ConcealSummon(bunny);
+                _bunny = bunny->GetGUID();
+                BoardVehicle(bunny, cart, SEAT_CART_BUNNY);
+            }
+        }
+
+        _scheduler.Schedule(COLUMN_BOARD_TO_WALK, [this](TaskContext /*task*/)
+        {
+            // Vehicle::AddPassenger schedules the join through a VehicleJoinEvent rather
+            // than seating anyone inline, so both seats are still empty when the casts
+            // return and there is nothing to check at the call site. By now they have run,
+            // and this is the first honest answer about whether the load is aboard.
+            Creature* cart = ObjectAccessor::GetCreature(*me, _cart);
+            Creature* bunny = ObjectAccessor::GetCreature(*me, _bunny);
+
+            // One retry each. A recruit walking the route with an empty back is the failure
+            // this scene shows when a boarding does not take, and it is silent otherwise.
+            // The walk goes ahead either way: a cart that boards a tick late snaps into
+            // place, which is better than a run that never starts.
+            if (cart && !cart->GetVehicle())
+            {
+                TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: cart %s did not board %s, retrying",
+                    cart->GetGUID().ToString().c_str(), me->GetGUID().ToString().c_str());
+                BoardVehicle(cart, me, SEAT_AMMO_CART);
+            }
+
+            if (cart && bunny && !bunny->GetVehicle())
+            {
+                TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: bunny %s did not board cart %s, retrying",
+                    bunny->GetGUID().ToString().c_str(), cart->GetGUID().ToString().c_str());
+                BoardVehicle(bunny, cart, SEAT_CART_BUNNY);
+            }
+
+            // Vehicle::Install runs after Reset, and a boarding that failed leaves a seat
+            // open, so this is the one place that catches both the recruit and the cart.
+            ClearVehicleSpellClick(me);
+
+            if (cart)
+            {
+                ClearVehicleSpellClick(cart);
+                RevealSummon(cart);
+            }
+
+            if (bunny)
+                RevealSummon(bunny);
+
+            // walk true is the whole reason this is MoveSmoothPath and not a chain of
+            // MovePoint calls: PointMovementGenerator::DoInitialize never touches
+            // MoveSplineInit::SetWalk, so a MovePoint always runs, and me->SetWalk does not
+            // change that.
+            me->GetMotionMaster()->MoveSmoothPath(POINT_COLUMN_END, _column->nodes, _column->size, true);
+        });
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        // MoveSmoothPath finishes through EffectMovementGenerator, so what comes back is
+        // EFFECT_MOTION_TYPE and not the POINT_MOTION_TYPE a MovePoint would give.
+        if (type != EFFECT_MOTION_TYPE || id != POINT_COLUMN_END)
+            return;
+
+        // The load goes first and in this order. Despawning the recruit takes its vehicle
+        // kit down with it, and Vehicle::Uninstall throws each passenger clear along its
+        // seat's exit arc on the way.
+        DespawnLoad();
+
+        // Each run is made by a fresh recruit rather than by one looping in place, so the
+        // spawn despawns and comes back. The respawn re-enters Reset and the next run sets
+        // off.
+        me->DespawnOrUnsummon(0, COLUMN_RESPAWN_DELAY);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // No UpdateVictim, and nothing that could acquire one. The scheduler is the whole
+        // AI.
+        _scheduler.Update(diff);
+    }
+
+private:
+    // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
+    // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
+    // Spell::CheckCast in the way of a cast that has no business failing -- and when it
+    // does fail it says nothing, applies no SPELL_AURA_CONTROL_VEHICLE, and so never queues
+    // the VehicleJoinEvent.
+    static void BoardVehicle(Unit* passenger, Unit* vehicle, int8 seat)
+    {
+        passenger->CastCustomSpell(VEHICLE_SPELL_RIDE_HARDCODED, SPELLVALUE_BASE_POINT0,
+            seat + 1, vehicle, TRIGGERED_FULL_MASK);
+    }
+
+    void DespawnLoad()
+    {
+        // Top of the stack down, so the cart is still there to be stepped off.
+        DespawnSummon(_bunny);
+        DespawnSummon(_cart);
+    }
+
+    void DespawnSummon(ObjectGuid& guid)
+    {
+        if (Creature* summon = ObjectAccessor::GetCreature(*me, guid))
+        {
+            // Unsummoning a seated passenger goes through Unit::_ExitVehicle, which unroots
+            // it and launches a spline that falls and lands beside the vehicle: the cart
+            // visibly hops off the recruit's back and only then vanishes. Hiding it first
+            // means that spline is launched for something no client is drawing any more.
+            ConcealSummon(summon);
+            summon->DespawnOrUnsummon();
+        }
+
+        guid.Clear();
+    }
+
+    RecruitColumn const* _column;
+    ObjectGuid _cart;
+    ObjectGuid _bunny;
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -2542,5 +2845,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_safe_officer_briefing);
     RegisterCreatureAI(npc_clean_cannon_x2);
     RegisterCreatureAI(npc_safe_guide);
+    RegisterCreatureAI(npc_gnomeregan_recruit_column);
     new player_safe_guide_summoner();
 }

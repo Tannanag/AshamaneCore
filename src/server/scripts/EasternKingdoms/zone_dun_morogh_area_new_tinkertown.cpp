@@ -2557,7 +2557,15 @@ enum GnomereganRecruitColumn
 // The next leaves a few seconds later. The three routes are 188, 191 and 257 yards, so at
 // walk speed the columns come round every 81, 83 and 109 seconds.
 static constexpr Milliseconds COLUMN_BOARD_TO_WALK = Milliseconds(1000);
-static constexpr Seconds COLUMN_RESPAWN_DELAY      = Seconds(6);
+
+// How long a post stands empty between one recruit reaching the end of its route and the
+// next setting off. Six seconds is what the cadence works out to, and the spread either side
+// of it is rolled per run: on a fixed gap the three columns keep whatever order they started
+// in for as long as the server is up, and a player standing at the fork sees the same three
+// recruits pass in the same sequence every time. Rolling it lets them drift apart. Widen the
+// pair to make the wobble more obvious -- nothing else depends on these two numbers.
+static constexpr uint32 COLUMN_RESPAWN_MIN_SECONDS = 3;
+static constexpr uint32 COLUMN_RESPAWN_MAX_SECONDS = 9;
 
 // The three routes out of town. Element 0 of each is that route's own start, because
 // MoveSplineInit::Launch overwrites element 0 with the creature's real position -- the
@@ -2796,7 +2804,7 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
         // Each run is made by a fresh recruit rather than by one looping in place, so the
         // spawn despawns and comes back. The respawn re-enters Reset and the next run sets
         // off.
-        me->DespawnOrUnsummon(0, COLUMN_RESPAWN_DELAY);
+        me->DespawnOrUnsummon(0, Seconds(urand(COLUMN_RESPAWN_MIN_SECONDS, COLUMN_RESPAWN_MAX_SECONDS)));
     }
 
     void UpdateAI(uint32 diff) override

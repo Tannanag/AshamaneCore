@@ -2544,6 +2544,12 @@ enum GnomereganRecruitColumn
     SEAT_AMMO_CART          = 0,
     SEAT_CART_BUNNY         = 0,
 
+    // What puts the recruit's arms out in front of it, on the handles of the cart it is
+    // pushing. Held for the whole run: the recruit wears it from the moment it takes its
+    // load to the moment it despawns, and nothing clears it in between. The cart and the
+    // bunny carry no kit of their own.
+    ANIM_KIT_PUSH_CART      = 645,
+
     POINT_COLUMN_END        = 1
 };
 
@@ -2697,6 +2703,13 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
                 me->GetGUID().ToString().c_str());
             return;
         }
+
+        // Set here rather than in creature_template_addon, which carries aiAnimKit 0 for
+        // 43276 and would put every static spawn of the entry into the pose as well. Reset
+        // is safe to set it from: Creature::setDeathState(JUST_RESPAWNED) runs
+        // LoadCreaturesAddon before AI()->Reset(), so the addon's 0 is written first and
+        // this overwrites it on every respawn.
+        me->SetAIAnimKitId(ANIM_KIT_PUSH_CART);
 
         // Hidden while it is assembled, then handed over finished. Both seats are filled by
         // a VehicleJoinEvent a tick after the cast and the client plays the seat's enter

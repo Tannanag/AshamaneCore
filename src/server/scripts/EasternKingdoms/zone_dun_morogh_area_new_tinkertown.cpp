@@ -2854,6 +2854,148 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum MonkTraining
+{
+    NPC_MONK_TRAINEE_TIMEKEEPER     = 63239,
+    NPC_MONK_TRAINEE_SECOND         = 63241,
+    NPC_MONK_TRAINEE_THIRD          = 63242,
+
+    // Both are instant, cost nothing, have no cooldown and no target restriction of
+    // any kind, and both apply SPELL_AURA_MOD_STUN to the caster for two seconds --
+    // which is the student losing his footing. Nothing can refuse them, so they are
+    // cast untriggered.
+    SPELL_KNOCKDOWN                 = 13360,
+    SPELL_DIZZY                     = 123540,
+
+    EMOTE_MONK_ATTACK_UNARMED       = 507,
+    EMOTE_MONK_SPECIAL_UNARMED      = 508,
+    EMOTE_MONK_PARRY_UNARMED        = 509
+};
+
+// The drill runs on a two-beat rhythm: every strike is followed by either a short
+// pause or a half-again longer one, rolled fresh each time and independent of the
+// last, with the short beat coming up slightly more often than the long. It is the
+// unevenness that makes the class look like it is working rather than ticking, so
+// the two beats are kept apart rather than averaged into one interval.
+static constexpr uint32 MONK_BEAT_SHORT = 4940;
+static constexpr uint32 MONK_BEAT_LONG = 7420;
+static constexpr int32 MONK_BEAT_SHORT_CHANCE = 55;
+
+static uint32 MonkBeat()
+{
+    return roll_chance_i(MONK_BEAT_SHORT_CHANCE) ? MONK_BEAT_SHORT : MONK_BEAT_LONG;
+}
+
+// The three students stand within three yards of the one that keeps time. Ten is far
+// enough to survive a spawn nudged off its mark and stops well short of the warrior
+// drill ground, which begins about nine yards away and holds no monks.
+static constexpr float MONK_CLASS_RANGE = 10.0f;
+
+// Xi, Friend to the Small. He stands facing the middle of his three students and
+// shadowboxes at them, and that is the whole of it -- he never moves, never speaks,
+// and casts nothing. He keeps his own time rather than the class's: master and
+// students are deliberately not in step with each other.
+struct npc_xi_monk_trainer : public ScriptedAI
+{
+    npc_xi_monk_trainer(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _beat = MonkBeat();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_beat > diff)
+        {
+            _beat -= diff;
+            return;
+        }
+
+        _beat = MonkBeat();
+
+        switch (urand(0, 2))
+        {
+            case 0: me->HandleEmoteCommand(EMOTE_MONK_ATTACK_UNARMED); break;
+            case 1: me->HandleEmoteCommand(EMOTE_MONK_SPECIAL_UNARMED); break;
+            case 2: me->HandleEmoteCommand(EMOTE_MONK_PARRY_UNARMED); break;
+        }
+    }
+
+private:
+    uint32 _beat = 0;
+};
+
+// The three Monk Trainees drawn up in front of Xi. They work as one class: all three
+// strike together on the same beat, but each rolls its own move, so the unison is in
+// the timing and not in what they throw.
+//
+// That shared beat is why only 63239 carries this script. Three creatures each
+// keeping their own time drift apart within a few strikes and never come back
+// together, because the beat is rolled rather than fixed; one timekeeper driving all
+// three cannot. The other two need no script of their own and have none -- they are
+// found by entry each beat rather than held as guids, so moving or respawning a
+// student needs no change here.
+struct npc_monk_trainee : public ScriptedAI
+{
+    npc_monk_trainee(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _beat = MonkBeat();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_beat > diff)
+        {
+            _beat -= diff;
+            return;
+        }
+
+        _beat = MonkBeat();
+
+        Strike(me);
+
+        if (Creature* second = me->FindNearestCreature(NPC_MONK_TRAINEE_SECOND, MONK_CLASS_RANGE))
+            Strike(second);
+
+        if (Creature* third = me->FindNearestCreature(NPC_MONK_TRAINEE_THIRD, MONK_CLASS_RANGE))
+            Strike(third);
+    }
+
+private:
+    // One student's move for one beat. Three parts strike to one part fall: each of
+    // the three unarmed moves comes up twice as often as either of the two ways of
+    // going down, so a quarter of all beats put somebody on the floor.
+    static void Strike(Creature* trainee)
+    {
+        switch (urand(0, 7))
+        {
+            case 0:
+            case 1:
+                trainee->HandleEmoteCommand(EMOTE_MONK_ATTACK_UNARMED);
+                break;
+            case 2:
+            case 3:
+                trainee->HandleEmoteCommand(EMOTE_MONK_SPECIAL_UNARMED);
+                break;
+            case 4:
+            case 5:
+                trainee->HandleEmoteCommand(EMOTE_MONK_PARRY_UNARMED);
+                break;
+            case 6:
+                trainee->CastSpell(trainee, SPELL_KNOCKDOWN, false);
+                break;
+            case 7:
+                trainee->CastSpell(trainee, SPELL_DIZZY, false);
+                break;
+        }
+    }
+
+    uint32 _beat = 0;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -2867,5 +3009,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_clean_cannon_x2);
     RegisterCreatureAI(npc_safe_guide);
     RegisterCreatureAI(npc_gnomeregan_recruit_column);
+    RegisterCreatureAI(npc_xi_monk_trainer);
+    RegisterCreatureAI(npc_monk_trainee);
     new player_safe_guide_summoner();
 }

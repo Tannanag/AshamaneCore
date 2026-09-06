@@ -3290,6 +3290,369 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum CrushcogHologram
+{
+    NPC_HINKLES_FASTBLAST            = 42491,
+    NPC_KELSEY_STEELSPARK            = 42366,
+    NPC_ELGIN_CLICKSPRING            = 42490,
+    NPC_IMAGE_OF_RAZLO_CRUSHCOG      = 42505,
+    NPC_IMAGE_OF_GNOMEREGAN_INFANTRY = 43131,
+    NPC_IMAGE_OF_DWARF_MOUNTAINEER   = 43132,
+    NPC_IMAGE_OF_MECHANO_TANK        = 43133,
+
+    // Holds a model in a single frame. It is what makes the tanks and Crushcog himself
+    // read as projected images rather than as NPCs standing about: they do not breathe,
+    // shift weight or blink. The Infantry and the Mountaineers deliberately do not get
+    // it, because they cheer.
+    SPELL_FREEZE_ANIM                = 16245,
+
+    // 43133 carries two models and rolls between them. Only this one is ever the tank
+    // in this scene; 38985, the other, is a different machine entirely.
+    MODEL_MECHANO_TANK_IMAGE         = 35960,
+
+    SAY_SPARKNOZZLE_THERMAPLUGG      = 0,
+    SAY_SPARKNOZZLE_INTELLIGENCE     = 1,
+    SAY_SPARKNOZZLE_IN_POSITION      = 2,
+    SAY_SPARKNOZZLE_YOURE_NEXT       = 3,
+
+    SAY_HINKLES_SCOUTS               = 0,
+    SAY_HINKLES_PROTOTYPE            = 1,
+
+    SAY_KELSEY_IRONFORGE             = 0,
+
+    SAY_ELGIN_BREWNALL               = 0,
+
+    POINT_CRUSHCOG_STEP_OUT          = 1
+};
+
+// The four who speak all stand within eight yards of the Captain. Twenty is wide enough
+// to find them from anywhere he could be nudged to and still far too narrow to reach
+// another camp; each of these entries has exactly one spawn in the world anyway.
+static constexpr float HOLOGRAM_CAST_RANGE = 20.0f;
+
+// Crushcog's image is projected a pace in front of the plinth he stands on, walks a
+// single yard and a quarter clear of it, and turns to face the gathering.
+static Position const CrushcogMark      = { -5138.53f, 499.372f, 396.624f,  4.10152f };
+static Position const CrushcogStepOut   = { -5137.77f, 500.366f, 396.58752f, 0.0f };
+static constexpr float CRUSHCOG_FACING  = 3.996804f;
+
+// Two mechano-tanks flank him, three dwarf mountaineers form up on one side and three
+// Gnomeregan infantry on the other. Every one of these is a projection with no business
+// of its own: they appear on their mark, hold it, and are gone again inside the minute.
+static Position const MechanoTankMarks[] =
+{
+    { -5137.05f, 499.769f, 396.45734f, 3.106686f },
+    { -5138.56f, 500.873f, 396.46933f, 4.345870f }
+};
+
+static Position const DwarfMountaineerMarks[] =
+{
+    { -5138.01f, 498.262f, 396.42035f, 1.500983f },
+    { -5138.44f, 498.372f, 396.42136f, 1.413717f },
+    { -5138.90f, 498.429f, 396.43634f, 1.413717f }
+};
+
+static Position const GnomereganInfantryMarks[] =
+{
+    { -5139.73f, 499.203f, 396.42035f, 6.195919f },
+    { -5139.75f, 499.571f, 396.45633f, 6.195919f },
+    { -5139.76f, 499.977f, 396.44333f, 6.195919f }
+};
+
+// Every beat, in milliseconds from the Captain's first line. The whole briefing is one
+// fixed clock -- nothing in it waits on an arrival, a cast or a player.
+static constexpr uint32 BRIEFING_FIRST_RUN_MS     = 30000;
+static constexpr uint32 BRIEFING_CYCLE_MS         = 300000;
+
+static constexpr uint32 BEAT_SPARKNOZZLE_SAY_0    = 0;
+static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_0 = 3660;
+static constexpr uint32 BEAT_SPARKNOZZLE_SAY_1    = 7330;
+static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_1 = 11140;
+static constexpr uint32 BEAT_HINKLES_SAY_0        = 17390;
+static constexpr uint32 BEAT_CRUSHCOG_HOVER_OFF   = 17390;
+static constexpr uint32 BEAT_CRUSHCOG_STEP_OUT    = 19060;
+static constexpr uint32 BEAT_CRUSHCOG_TURN        = 19850;
+static constexpr uint32 BEAT_TANKS_APPEAR         = 21060;
+static constexpr uint32 BEAT_HINKLES_ANSWER_0     = 21060;
+static constexpr uint32 BEAT_HINKLES_SAY_1        = 25870;
+static constexpr uint32 BEAT_HINKLES_ANSWER_1     = 29500;
+static constexpr uint32 BEAT_KELSEY_SAY_0         = 35640;
+static constexpr uint32 BEAT_KELSEY_ANSWER_0      = 39280;
+static constexpr uint32 BEAT_MOUNTAINEERS_APPEAR  = 45370;
+static constexpr uint32 BEAT_ELGIN_SAY_0          = 45390;
+static constexpr uint32 BEAT_ELGIN_ANSWER_0       = 48990;
+static constexpr uint32 BEAT_CRUSHCOG_EXCLAIM     = 50650;
+static constexpr uint32 BEAT_INFANTRY_APPEAR      = 51480;
+static constexpr uint32 BEAT_SPARKNOZZLE_SAY_2    = 52660;
+static constexpr uint32 BEAT_MOUNTAINEERS_CHEER   = 53860;
+static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_2 = 56340;
+static constexpr uint32 BEAT_CRUSHCOG_LEAVES      = 56900;
+static constexpr uint32 BEAT_SPARKNOZZLE_SAY_3    = 59970;
+static constexpr uint32 BEAT_INFANTRY_CHEER       = 62030;
+static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_3 = 63630;
+
+// How long each set of images is held. They are timed despawns rather than a scheduled
+// cleanup so that a run cut short -- a grid unload, a .reload -- still takes them away.
+static constexpr uint32 TANK_DURATION_MS         = 41530;
+static constexpr uint32 MOUNTAINEER_DURATION_MS  = 13290;
+static constexpr uint32 INFANTRY_DURATION_MS     = 14520;
+
+// Crushcog's image is taken off and put back rather than hidden, which is what puts him
+// on his mark again with no teleport and no leftover state. From C++ the respawn timer
+// on a forced despawn is honoured: ForcedDespawn swaps m_respawnDelay for this value and
+// zeroes the corpse delay for the duration of the kill, so he is back in eight seconds
+// and not in his spawn timer plus a minute of corpse decay.
+static constexpr Seconds CRUSHCOG_RETURN = Seconds(8);
+
+// The Captain's briefing and the enemy it conjures. Every five minutes Captain Tread
+// Sparknozzle runs through the state of the war with his three officers, and a projected
+// Razlo Crushcog steps off his plinth with a mechano-tank escort while they do. The
+// mountaineers and the infantry appear as each is spoken of, cheer, and wink out.
+//
+// The clock is free-running and has nothing to do with the player: it is a plain timer
+// with no proximity condition anywhere in it, which is why the briefing keeps its place
+// in the cycle whether or not anyone is standing there to watch it.
+//
+// Not SmartAI. The run drives four other creatures' speech, emotes, movement and
+// lifetime, and holds eight summons across several beats to cheer them on cue; a
+// SMART_ACTION reaches none of that. It also wants the two things the database has no
+// column for -- forcing a summon's model off the entry's own roll, and the hover the
+// image is projected with.
+struct npc_captain_tread_sparknozzle_scene : public ScriptedAI
+{
+    npc_captain_tread_sparknozzle_scene(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _mountaineers.clear();
+        _infantry.clear();
+
+        _scheduler.Schedule(Milliseconds(BRIEFING_FIRST_RUN_MS), [this](TaskContext task)
+        {
+            StartBriefing();
+            task.Repeat(Milliseconds(BRIEFING_CYCLE_MS));
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // No UpdateVictim and no melee. The Captain is immune to everything and never
+        // acquires a victim; the scheduler is the whole of what this adds to him.
+        _scheduler.Update(diff);
+    }
+
+private:
+
+    void StartBriefing()
+    {
+        _mountaineers.clear();
+        _infantry.clear();
+
+        Beat(BEAT_SPARKNOZZLE_SAY_0,    [this] { SayWithEmote(me, SAY_SPARKNOZZLE_THERMAPLUGG, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_SPARKNOZZLE_ANSWER_0, [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION); });
+        Beat(BEAT_SPARKNOZZLE_SAY_1,    [this] { SayWithEmote(me, SAY_SPARKNOZZLE_INTELLIGENCE, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_SPARKNOZZLE_ANSWER_1, [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_QUESTION); });
+
+        Beat(BEAT_HINKLES_SAY_0,    [this] { SayWithEmote(FindActor(NPC_HINKLES_FASTBLAST), SAY_HINKLES_SCOUTS, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_HINKLES_ANSWER_0, [this] { Emote(FindActor(NPC_HINKLES_FASTBLAST), EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_HINKLES_SAY_1,    [this] { SayWithEmote(FindActor(NPC_HINKLES_FASTBLAST), SAY_HINKLES_PROTOTYPE, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_HINKLES_ANSWER_1, [this] { Emote(FindActor(NPC_HINKLES_FASTBLAST), EMOTE_ONESHOT_TALK); });
+
+        Beat(BEAT_KELSEY_SAY_0,    [this] { SayWithEmote(FindActor(NPC_KELSEY_STEELSPARK), SAY_KELSEY_IRONFORGE, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_KELSEY_ANSWER_0, [this] { Emote(FindActor(NPC_KELSEY_STEELSPARK), EMOTE_ONESHOT_TALK); });
+
+        Beat(BEAT_ELGIN_SAY_0,    [this] { SayWithEmote(FindActor(NPC_ELGIN_CLICKSPRING), SAY_ELGIN_BREWNALL, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_ELGIN_ANSWER_0, [this] { Emote(FindActor(NPC_ELGIN_CLICKSPRING), EMOTE_ONESHOT_POINT); });
+
+        Beat(BEAT_SPARKNOZZLE_SAY_2,    [this] { SayWithEmote(me, SAY_SPARKNOZZLE_IN_POSITION, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_SPARKNOZZLE_ANSWER_2, [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_SPARKNOZZLE_SAY_3,    [this] { SayWithEmote(me, SAY_SPARKNOZZLE_YOURE_NEXT, EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_SPARKNOZZLE_ANSWER_3, [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_POINT); });
+
+        ScheduleCrushcog();
+        ScheduleImages();
+    }
+
+    void ScheduleCrushcog()
+    {
+        Beat(BEAT_CRUSHCOG_HOVER_OFF, [this]
+        {
+            // The image hovers a hand's breadth off its plinth for as long as it is
+            // standing on it, and stops hovering to walk. This is the create-block bit
+            // and not a movement flag, so a spawned creature carries it only for the
+            // clients it is announced to; see the note on the image's own AI.
+            if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
+                crushcog->SendSetPlayHoverAnim(false);
+        });
+
+        Beat(BEAT_CRUSHCOG_STEP_OUT, [this]
+        {
+            Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG);
+            if (!crushcog)
+                return;
+
+            // Frozen is the pose he holds on the plinth. It has to come off before he is
+            // asked to walk or the model stays in that single frame while he slides.
+            crushcog->RemoveAurasDueToSpell(SPELL_FREEZE_ANIM);
+
+            // A yard and a quarter, walked, off his own mark. MoveSplineInit reads
+            // args.walk off MOVEMENTFLAG_WALKING in its constructor, so the walk flag
+            // has to be set before the generator builds the spline; PointMovementGenerator
+            // never sets it itself and an unprepared MovePoint runs.
+            //
+            // No generated path: it is a straight step across open flagstone, and the
+            // navmesh has no idea the plinth is there.
+            crushcog->SetWalk(true);
+            crushcog->GetMotionMaster()->MovePoint(POINT_CRUSHCOG_STEP_OUT, CrushcogStepOut, false);
+        });
+
+        Beat(BEAT_CRUSHCOG_TURN, [this]
+        {
+            // The step ends without a facing of its own, and he turns to the gathering
+            // about eight tenths of a second after it -- by which time the half-second
+            // spline is long finished, so nothing overwrites this.
+            if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
+                crushcog->SetFacingTo(CRUSHCOG_FACING);
+        });
+
+        Beat(BEAT_CRUSHCOG_EXCLAIM, [this]
+        {
+            if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
+                crushcog->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION);
+        });
+
+        Beat(BEAT_CRUSHCOG_LEAVES, [this]
+        {
+            // Taken off the field entirely, and back on his mark eight seconds later
+            // with his facing, his hover and his frozen pose restored by his own Reset.
+            // Nothing here has to put him back: he is a database spawn, so the map
+            // respawns him where he belongs.
+            if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
+                crushcog->DespawnOrUnsummon(0, CRUSHCOG_RETURN);
+        });
+    }
+
+    void ScheduleImages()
+    {
+        Beat(BEAT_TANKS_APPEAR, [this]
+        {
+            for (Position const& mark : MechanoTankMarks)
+                if (Creature* tank = SummonImage(NPC_IMAGE_OF_MECHANO_TANK, mark, TANK_DURATION_MS))
+                    // The entry rolls between two models and only one of them is this
+                    // machine. Set before the creature has been through a grid update so
+                    // no client is shown the other one first.
+                    tank->SetDisplayId(MODEL_MECHANO_TANK_IMAGE);
+        });
+
+        Beat(BEAT_MOUNTAINEERS_APPEAR, [this]
+        {
+            // No model forced on these or on the infantry: both entries carry exactly the
+            // set of models the images are drawn from, and the roll is part of the scene.
+            for (Position const& mark : DwarfMountaineerMarks)
+                if (Creature* mountaineer = SummonImage(NPC_IMAGE_OF_DWARF_MOUNTAINEER, mark, MOUNTAINEER_DURATION_MS))
+                    _mountaineers.push_back(mountaineer->GetGUID());
+        });
+
+        Beat(BEAT_INFANTRY_APPEAR, [this]
+        {
+            for (Position const& mark : GnomereganInfantryMarks)
+                if (Creature* infantry = SummonImage(NPC_IMAGE_OF_GNOMEREGAN_INFANTRY, mark, INFANTRY_DURATION_MS))
+                    _infantry.push_back(infantry->GetGUID());
+        });
+
+        Beat(BEAT_MOUNTAINEERS_CHEER, [this] { CheerAll(_mountaineers); });
+        Beat(BEAT_INFANTRY_CHEER,     [this] { CheerAll(_infantry); });
+    }
+
+    Creature* SummonImage(uint32 entry, Position const& mark, uint32 durationMs)
+    {
+        // Nothing is concealed and nothing is revealed. The images are meant to be seen
+        // arriving -- they blink into place on their marks, which is the whole effect.
+        return me->SummonCreature(entry, mark, TEMPSUMMON_TIMED_DESPAWN, durationMs);
+    }
+
+    void CheerAll(std::vector<ObjectGuid> const& images)
+    {
+        for (ObjectGuid const& guid : images)
+            if (Creature* image = ObjectAccessor::GetCreature(*me, guid))
+                image->HandleEmoteCommand(EMOTE_ONESHOT_CHEER);
+    }
+
+    // Each officer plays a gesture a fraction before the line rather than with it, which
+    // is what makes the mouth movement land on the text instead of after it.
+    static void SayWithEmote(Creature* speaker, uint8 group, uint32 emote)
+    {
+        if (!speaker)
+            return;
+
+        speaker->HandleEmoteCommand(emote);
+        speaker->AI()->Talk(group);
+    }
+
+    static void Emote(Creature* actor, uint32 emote)
+    {
+        if (actor)
+            actor->HandleEmoteCommand(emote);
+    }
+
+    Creature* FindActor(uint32 entry)
+    {
+        // Looked up per beat rather than held. Crushcog's image is off the field for the
+        // last eight seconds of every run and comes back as a fresh object, so a cached
+        // pointer would be stale exactly when the next run needs it.
+        return me->FindNearestCreature(entry, HOLOGRAM_CAST_RANGE);
+    }
+
+    template<typename Action>
+    void Beat(uint32 offsetMs, Action&& action)
+    {
+        _scheduler.Schedule(Milliseconds(offsetMs), [action](TaskContext /*task*/) { action(); });
+    }
+
+    std::vector<ObjectGuid> _mountaineers;
+    std::vector<ObjectGuid> _infantry;
+    TaskScheduler _scheduler;
+};
+
+// The projection of Razlo Crushcog that stands on the plinth between briefings. It holds
+// two things that have to survive every respawn, and the Captain's script takes both of
+// them off when the briefing starts.
+//
+// The hover is not reachable from the database at all. It is a create-block bit rather
+// than a movement flag or an addon column, and this core hardcodes it off when it builds
+// an object's movement update, so the only way to raise it is SendSetPlayHoverAnim.
+// That reaches the players standing there and not anyone who walks up afterwards --
+// until his next respawn, which is never more than one briefing away.
+struct npc_image_of_razlo_crushcog : public ScriptedAI
+{
+    npc_image_of_razlo_crushcog(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        me->CastSpell(me, SPELL_FREEZE_ANIM, true);
+
+        // A tick behind the reset, not in it: Reset runs inside Creature::Respawn, ahead
+        // of the visibility update that announces him, and a hover sent before the create
+        // block reaches nobody.
+        _scheduler.Schedule(Seconds(1), [this](TaskContext /*task*/)
+        {
+            me->SendSetPlayHoverAnim(true);
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -3306,5 +3669,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_xi_monk_trainer);
     RegisterCreatureAI(npc_monk_trainee);
     RegisterCreatureAI(npc_nevin_twistwrench_arrivals);
+    RegisterCreatureAI(npc_captain_tread_sparknozzle_scene);
+    RegisterCreatureAI(npc_image_of_razlo_crushcog);
     new player_safe_guide_summoner();
 }

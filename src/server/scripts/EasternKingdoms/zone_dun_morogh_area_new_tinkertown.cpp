@@ -2996,6 +2996,295 @@ private:
     uint32 _beat = 0;
 };
 
+enum NevinArrivals
+{
+    NPC_ARRIVAL_OPERATIVE  = 45847,
+    NPC_ARRIVAL_TECHNICIAN = 46230,
+    NPC_ARRIVAL_OFFICER    = 46025,
+
+    // The step up to Nevin and the walk out of the camp. Neither id is ever heard: the
+    // arrival is a summon carrying its entry's own AI, so its MovementInform goes there.
+    // They are here because MoveSmoothPath demands one.
+    POINT_ARRIVAL_STEP     = 10,
+    POINT_ARRIVAL_WALK_OUT = 11
+};
+
+// The one spot every arrival appears on, orientation included -- it is already turned
+// the way it is about to walk, so nothing has to face it when it lands.
+Position const NevinArrivalPad = { -5201.760f, 478.174f, 388.543f, 5.0963612f };
+
+// Two yards, from the pad up to Nevin's shoulder. Element 0 is never a destination --
+// MoveSplineInit::Launch overwrites it with the mover's real position -- so it only
+// records that the leg begins on the pad.
+Position const NevinArrivalStep[] =
+{
+    { -5201.760f, 478.174f, 388.543f },
+    { -5201.011f, 476.320f, 388.363f }
+};
+
+// The walk out: east past the front of the camp, north up its flank, then back
+// south-west to the point it goes off at. Eleven nodes, and element 0 is the spot it
+// saluted from rather than a destination of its own.
+//
+// The route is one-way and complete as it stands. It does not close -- the last node is
+// twenty-four yards from the pad -- so the arrival is taken off there rather than
+// turning round and walking back through the camp.
+Position const NevinArrivalWalkOut[] =
+{
+    { -5201.011f, 476.320f, 388.363f },
+    { -5196.053f, 474.901f, 388.679f },
+    { -5186.080f, 473.747f, 388.322f },
+    { -5181.280f, 479.153f, 388.285f },
+    { -5180.780f, 488.089f, 388.068f },
+    { -5185.950f, 495.590f, 387.977f },
+    { -5190.030f, 506.799f, 387.764f },
+    { -5192.920f, 514.186f, 387.683f },
+    { -5198.780f, 511.991f, 388.400f },
+    { -5205.100f, 505.281f, 388.400f },
+    { -5205.901f, 502.219f, 388.400f }
+};
+
+static Position const& NevinArrivalEnd()
+{
+    return NevinArrivalWalkOut[std::extent<decltype(NevinArrivalWalkOut)>::value - 1];
+}
+
+// How close to the last node counts as having got there. The walk ends on it, so this
+// only has to cover a spline stopping a little short.
+static constexpr float ARRIVAL_END_TOLERANCE = 3.0f;
+
+// Which of the three walks in is rolled fresh every run rather than rotating, so the
+// same one can come twice in a row. The Operative comes up about half the time and the
+// other two share the rest. The split is not firmly settled; levelling it is this array
+// and nothing else.
+struct NevinArrivalKind
+{
+    uint32 entry;
+    uint32 weight;
+};
+
+static constexpr NevinArrivalKind ARRIVAL_KINDS[] =
+{
+    { NPC_ARRIVAL_OPERATIVE,  16 },
+    { NPC_ARRIVAL_TECHNICIAN,  8 },
+    { NPC_ARRIVAL_OFFICER,     6 }
+};
+
+static uint32 RollArrivalEntry()
+{
+    uint32 total = 0;
+    for (NevinArrivalKind const& kind : ARRIVAL_KINDS)
+        total += kind.weight;
+
+    uint32 roll = urand(1, total);
+    for (NevinArrivalKind const& kind : ARRIVAL_KINDS)
+    {
+        if (roll <= kind.weight)
+            return kind.entry;
+
+        roll -= kind.weight;
+    }
+
+    return ARRIVAL_KINDS[0].entry;
+}
+
+// Every beat of one run, measured from the moment the arrival appears.
+//
+// The step off is where the one second cast lands rather than where the creature is
+// created, which is why it is not simply zero. The salute comes 0.4 seconds after the
+// two-yard step ends, and the arrival holds that spot for 2.86 seconds in all before
+// setting off -- the only pause anywhere in the run. It walks the rest without
+// stopping.
+static constexpr Milliseconds ARRIVE_TO_STEP     = Milliseconds(836);
+static constexpr Milliseconds ARRIVE_TO_SALUTE   = Milliseconds(2049);
+static constexpr Milliseconds ARRIVE_TO_WALK_OUT = Milliseconds(4497);
+
+// A backstop, and normally already spent: the walk out takes about 32 seconds and the
+// arrival is taken off the moment its spline finishes. This is only what catches a walk
+// that never arrives -- something in the way, a spline that failed to launch -- so that
+// the cycle cannot stall with an arrival left standing in the camp.
+static constexpr Milliseconds ARRIVE_TO_GIVE_UP  = Milliseconds(50000);
+
+// The camp stands empty between one arrival going off and the next appearing. The gap
+// runs anywhere from 31 to 44 seconds, so it is rolled rather than fixed; a fixed gap
+// would also lock this scene into step with the other timed ones around it for as long
+// as the server is up.
+static constexpr uint32 ARRIVAL_GAP_MIN_SECONDS = 31;
+static constexpr uint32 ARRIVAL_GAP_MAX_SECONDS = 44;
+
+// Nevin Twistwrench, creature guid 167450. He does nothing himself -- he stands where he
+// stands and hands out his quests -- but the camp keeps reporting to him: about every 77
+// seconds a S.A.F.E. Operative, Technician or Officer appears beside him, steps up,
+// salutes, and walks out of the camp to the north before going off at the far end.
+//
+// The one that arrives is a summon and not one of the spawns standing here. All three
+// entries use the one pad, one at a time and never two at once, and each is taken off at
+// the end of its own walk. The three S.A.F.E. spawns standing around Nevin belong where
+// they are and none of them is a stand-in for this: two of them sit, and none stands on
+// the pad.
+//
+// Not SmartAI. The run drives a second creature's movement, pose and emote across two
+// legs, and SMART_ACTION has no way to walk a creature that is not the one the script is
+// attached to. On the spawn rather than on the entry: 42396 is Nevin everywhere, and
+// this is the only place he is met.
+struct npc_nevin_twistwrench : public ScriptedAI
+{
+    npc_nevin_twistwrench(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        // Reset runs on respawn and on anything that cuts a run short -- a grid unload,
+        // a .reload. Without this the arrival from the abandoned run is left standing
+        // wherever the walk stopped it.
+        DespawnArrival();
+
+        _scheduler.Schedule(Milliseconds(1), [this](TaskContext /*task*/)
+        {
+            SummonArrival();
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // No UpdateVictim, and nothing here that would give him one. Nevin's own
+        // behaviour is untouched -- the scheduler is the whole of what this adds.
+        _scheduler.Update(diff);
+
+        // The arrival goes off when it gets to the end of its walk rather than when the
+        // clock says it should. It is a summon carrying its entry's default AI, so its
+        // MovementInform goes there and never reaches this script -- watching its spline
+        // is the way to hear about the arrival from outside it. The scheduler is updated
+        // first, so a leg issued this tick has already been launched and cannot read as
+        // finished.
+        if (!_walking)
+            return;
+
+        Creature* arrival = GetArrival();
+        if (!arrival)
+        {
+            EndRun();
+            return;
+        }
+
+        if (!arrival->movespline->Finalized() || arrival->GetExactDist(&NevinArrivalEnd()) > ARRIVAL_END_TOLERANCE)
+            return;
+
+        EndRun();
+    }
+
+private:
+
+    void SummonArrival()
+    {
+        // Nothing is concealed here, and the cast is not triggered, for the same reason
+        // the Loading Room arrival is written this way: the creature is created and the
+        // cast begun in the same instant, and the flash lands 0.84 seconds later, so it
+        // is briefly standing on the pad before the effect goes off. A triggered cast
+        // collapses that into one instant, which is the tighter effect and the wrong
+        // one.
+        TempSummon* arrival = me->SummonCreature(RollArrivalEntry(), NevinArrivalPad, TEMPSUMMON_MANUAL_DESPAWN);
+        if (!arrival)
+        {
+            // Nothing else would ever run again: every later summon is scheduled off the
+            // end of the run this one was going to be.
+            EndRun();
+            return;
+        }
+
+        _arrival = arrival->GetGUID();
+
+        // creature_addon cannot reach a summon, so what a summon wears is whatever
+        // creature_template_addon says -- and 45847's row carries emote 214
+        // EMOTE_STATE_READY_RIFLE and SheathState 2. An arrival has neither: it comes in
+        // with an empty emote state and its gun stowed. Set here rather than left alone
+        // because a state emote holds the model in its own pose and the arrival has a
+        // walk to do; set immediately, before the creature has been through a grid
+        // update, so no client is shown the template's values first.
+        //
+        // Nothing puts them back: LoadCreaturesAddon is what would, and it runs when a
+        // creature reaches its home position, which this one never does -- it is passive,
+        // it never evades, and it is taken off at the end of its walk.
+        arrival->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE);
+        arrival->SetSheath(SHEATH_STATE_MELEE);
+
+        // The route crosses the middle of the camp, and an arrival that stops to fight
+        // never finishes it: a victim means ChaseMovementGenerator, which takes
+        // MOTION_SLOT_ACTIVE off the walk, so the spline this script is watching for
+        // never finalizes anywhere near the last node and the run is left to the backstop.
+        arrival->SetReactState(REACT_PASSIVE);
+
+        arrival->CastSpell(arrival, SPELL_TELEPORT, false);
+
+        _scheduler.Schedule(ARRIVE_TO_STEP, [this](TaskContext /*task*/)
+        {
+            if (Creature* arrival = GetArrival())
+                WalkRoute(arrival, POINT_ARRIVAL_STEP, NevinArrivalStep,
+                    std::extent<decltype(NevinArrivalStep)>::value);
+        });
+
+        _scheduler.Schedule(ARRIVE_TO_SALUTE, [this](TaskContext /*task*/)
+        {
+            // The whole point of the walk in. Nothing turns it first: the two-yard step
+            // leaves the arrival pointed within six degrees of Nevin already, so it
+            // salutes on the direction it walked in on.
+            if (Creature* arrival = GetArrival())
+                arrival->HandleEmoteCommand(EMOTE_ONESHOT_SALUTE);
+        });
+
+        _scheduler.Schedule(ARRIVE_TO_WALK_OUT, [this](TaskContext /*task*/)
+        {
+            if (Creature* arrival = GetArrival())
+            {
+                WalkRoute(arrival, POINT_ARRIVAL_WALK_OUT, NevinArrivalWalkOut,
+                    std::extent<decltype(NevinArrivalWalkOut)>::value);
+                _walking = true;
+            }
+        });
+
+        _scheduler.Schedule(ARRIVE_TO_GIVE_UP, [this](TaskContext /*task*/)
+        {
+            EndRun();
+        });
+    }
+
+    // The end of one run and the start of the wait for the next. Both halves are here so
+    // that the walk finishing early and the backstop firing late come to the same thing.
+    void EndRun()
+    {
+        // The cancel goes first: it would otherwise take the next summon back off the
+        // scheduler along with the beats of the run that has just ended.
+        _scheduler.CancelAll();
+
+        DespawnArrival();
+
+        _scheduler.Schedule(Seconds(urand(ARRIVAL_GAP_MIN_SECONDS, ARRIVAL_GAP_MAX_SECONDS)),
+            [this](TaskContext /*task*/)
+        {
+            SummonArrival();
+        });
+    }
+
+    Creature* GetArrival()
+    {
+        return ObjectAccessor::GetCreature(*me, _arrival);
+    }
+
+    void DespawnArrival()
+    {
+        if (Creature* arrival = GetArrival())
+            arrival->DespawnOrUnsummon();
+
+        _arrival.Clear();
+        _walking = false;
+    }
+
+    ObjectGuid _arrival;
+    bool _walking = false;
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -3011,5 +3300,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_gnomeregan_recruit_column);
     RegisterCreatureAI(npc_xi_monk_trainer);
     RegisterCreatureAI(npc_monk_trainee);
+    RegisterCreatureAI(npc_nevin_twistwrench);
     new player_safe_guide_summoner();
 }

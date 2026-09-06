@@ -3127,9 +3127,14 @@ static constexpr uint32 ARRIVAL_GAP_MAX_SECONDS = 44;
 // legs, and SMART_ACTION has no way to walk a creature that is not the one the script is
 // attached to. On the spawn rather than on the entry: 42396 is Nevin everywhere, and
 // this is the only place he is met.
-struct npc_nevin_twistwrench : public ScriptedAI
+//
+// The name carries the suffix because `npc_nevin_twistwrench` is taken, by a different
+// Nevin: entry 45966 in `zone_gnomeregan.cpp`, who irradiates players for the
+// Decontamination quest. Two entries share the name in the client and only one of them
+// can have the bare script name.
+struct npc_nevin_twistwrench_arrivals : public ScriptedAI
 {
-    npc_nevin_twistwrench(Creature* creature) : ScriptedAI(creature) { }
+    npc_nevin_twistwrench_arrivals(Creature* creature) : ScriptedAI(creature) { }
 
     void Reset() override
     {
@@ -3300,6 +3305,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_gnomeregan_recruit_column);
     RegisterCreatureAI(npc_xi_monk_trainer);
     RegisterCreatureAI(npc_monk_trainee);
-    RegisterCreatureAI(npc_nevin_twistwrench);
+    RegisterCreatureAI(npc_nevin_twistwrench_arrivals);
     new player_safe_guide_summoner();
 }

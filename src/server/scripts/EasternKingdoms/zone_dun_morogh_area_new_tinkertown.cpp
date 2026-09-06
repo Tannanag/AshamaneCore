@@ -3369,7 +3369,6 @@ static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_0 = 3660;
 static constexpr uint32 BEAT_SPARKNOZZLE_SAY_1    = 7330;
 static constexpr uint32 BEAT_SPARKNOZZLE_ANSWER_1 = 11140;
 static constexpr uint32 BEAT_HINKLES_SAY_0        = 17390;
-static constexpr uint32 BEAT_CRUSHCOG_HOVER_OFF   = 17390;
 static constexpr uint32 BEAT_CRUSHCOG_STEP_OUT    = 19060;
 static constexpr uint32 BEAT_CRUSHCOG_TURN        = 19850;
 static constexpr uint32 BEAT_TANKS_APPEAR         = 21060;
@@ -3415,9 +3414,8 @@ static constexpr Seconds CRUSHCOG_RETURN = Seconds(8);
 //
 // Not SmartAI. The run drives four other creatures' speech, emotes, movement and
 // lifetime, and holds eight summons across several beats to cheer them on cue; a
-// SMART_ACTION reaches none of that. It also wants the two things the database has no
-// column for -- forcing a summon's model off the entry's own roll, and the hover the
-// image is projected with.
+// SMART_ACTION reaches none of that, nor the one thing the database has no column for:
+// forcing a summon's model off the entry's own roll.
 struct npc_captain_tread_sparknozzle_scene : public ScriptedAI
 {
     npc_captain_tread_sparknozzle_scene(Creature* creature) : ScriptedAI(creature) { }
@@ -3476,16 +3474,6 @@ private:
 
     void ScheduleCrushcog()
     {
-        Beat(BEAT_CRUSHCOG_HOVER_OFF, [this]
-        {
-            // The image hovers a hand's breadth off its plinth for as long as it is
-            // standing on it, and stops hovering to walk. This is the create-block bit
-            // and not a movement flag, so a spawned creature carries it only for the
-            // clients it is announced to; see the note on the image's own AI.
-            if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
-                crushcog->SendSetPlayHoverAnim(false);
-        });
-
         Beat(BEAT_CRUSHCOG_STEP_OUT, [this]
         {
             Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG);
@@ -3525,9 +3513,9 @@ private:
         Beat(BEAT_CRUSHCOG_LEAVES, [this]
         {
             // Taken off the field entirely, and back on his mark eight seconds later
-            // with his facing, his hover and his frozen pose restored by his own Reset.
-            // Nothing here has to put him back: he is a database spawn, so the map
-            // respawns him where he belongs.
+            // with his facing and his frozen pose restored by his own Reset. Nothing here
+            // has to put him back: he is a database spawn, so the map respawns him where
+            // he belongs.
             if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
                 crushcog->DespawnOrUnsummon(0, CRUSHCOG_RETURN);
         });
@@ -3615,42 +3603,25 @@ private:
     TaskScheduler _scheduler;
 };
 
-// The projection of Razlo Crushcog that stands on the plinth between briefings. It holds
-// two things that have to survive every respawn, and the Captain's script takes both of
-// them off when the briefing starts.
+// The projection of Razlo Crushcog that stands on the plinth between briefings. The
+// frozen pose is the one thing that has to survive every respawn, and the briefing takes
+// it off him at the moment he steps out.
 //
-// The hover is not reachable from the database at all. It is a create-block bit rather
-// than a movement flag or an addon column, and this core hardcodes it off when it builds
-// an object's movement update, so the only way to raise it is SendSetPlayHoverAnim.
-// That reaches the players standing there and not anyone who walks up afterwards --
-// until his next respawn, which is never more than one briefing away.
+// Reset is the right place for it because the briefing puts him back by despawning him:
+// Creature::Respawn calls it, so this runs once per cycle with no help from the Captain.
+//
+// He does not hover, and cannot be made to from here. The bit that would do it is carried
+// on the create block rather than by any movement flag or addon column, and this core
+// hardcodes it off when it builds an object's movement update; the one packet that could
+// raise it afterwards has no effect on this client.
 struct npc_image_of_razlo_crushcog : public ScriptedAI
 {
     npc_image_of_razlo_crushcog(Creature* creature) : ScriptedAI(creature) { }
 
     void Reset() override
     {
-        _scheduler.CancelAll();
-
         me->CastSpell(me, SPELL_FREEZE_ANIM, true);
-
-        // A tick behind the reset, not in it: Reset runs inside Creature::Respawn, ahead
-        // of the visibility update that announces him, and a hover sent before the create
-        // block reaches nobody.
-        _scheduler.Schedule(Seconds(1), [this](TaskContext /*task*/)
-        {
-            me->SendSetPlayHoverAnim(true);
-        });
     }
-
-    void UpdateAI(uint32 diff) override
-    {
-        _scheduler.Update(diff);
-    }
-
-private:
-
-    TaskScheduler _scheduler;
 };
 
 void AddSC_dun_morogh_area_new_tinkertown()

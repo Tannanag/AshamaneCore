@@ -18,6 +18,7 @@
 #include "ScriptMgr.h"
 #include "Creature.h"
 #include "Duration.h"
+#include "GameObjectData.h"
 #include "Log.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -25,6 +26,7 @@
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
+#include "QuestDef.h"
 #include "ScriptedCreature.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
@@ -3733,6 +3735,370 @@ struct npc_image_of_razlo_crushcog : public ScriptedAI
     }
 };
 
+enum TockRestoration
+{
+    NPC_GNOME_RESTORATION_APPARATUS = 43035,
+    NPC_RECOVERED_GNOME             = 43033,
+
+    GO_RECOVERED_HELM               = 204255,
+
+    QUEST_WHATS_LEFT_BEHIND         = 26264,
+
+    // 43035 carries two models and rolls between them. Only 28016 is the machine that
+    // stands in the yard; 20570 is a different device entirely.
+    MODEL_RESTORATION_APPARATUS     = 28016,
+
+    // Tock's goggles are a model swap rather than an equipped item, so they go on and
+    // come off as an aura.
+    SPELL_GOGGLE_TRANSFORM          = 80414,
+
+    SPELL_LIGHTNING_BEAM            = 80409,
+    SPELL_PERSONNEL_LAUNCHER_STATE  = 80381,
+    SPELL_LIGHTNING_NOVA            = 57322,
+    SPELL_EXPLOSION                 = 62987,
+    SPELL_EXPLOSION_COUNTDOWN       = 80531,
+
+    SAY_TOCK_PROCESS                = 0,
+    SAY_TOCK_GOGGLES                = 1,
+    SAY_TOCK_AMAZING                = 2,
+    SAY_TOCK_ALL_THERE              = 3,
+    SAY_TOCK_COME_BACK              = 4,
+    SAY_TOCK_MEDIC                  = 5,
+    SAY_TOCK_ROCKET_SCIENTIST       = 6,
+
+    SAY_GNOME_WHAT_HAPPENED         = 0,
+    SAY_GNOME_NOT_HERE              = 1,
+
+    POINT_TOCK_MACHINE              = 1,
+    POINT_TOCK_DIAL                 = 2,
+    POINT_TOCK_HOME                 = 3,
+    POINT_GNOME_STEP_OFF            = 4,
+    POINT_GNOME_AWAY                = 5
+};
+
+// Tock crosses to the machine and then round to the side of it. Element 0 of each of
+// these is the point he is standing on when the leg goes out, never a destination:
+// MoveSplineInit::Launch overwrites it with the mover's real position.
+//
+// The second leg swings wide of the apparatus rather than cutting the corner, and the
+// navmesh has no idea the apparatus is there, so both are written out instead of asked
+// of the pathfinder.
+Position const TockToMachine[] =
+{
+    { -5054.6494f, 480.51040f, 402.97450f },
+    { -5054.0010f, 483.07986f, 402.93810f },
+    { -5054.3525f, 483.64932f, 402.90173f }
+};
+
+Position const TockToDial[] =
+{
+    { -5054.3525f, 483.64932f, 402.90173f },
+    { -5052.0195f, 481.42450f, 403.51550f },
+    { -5052.0195f, 482.42450f, 403.26550f },
+    { -5052.1860f, 483.19965f, 403.12924f }
+};
+
+// He turns to the machine once he is beside it. The second leg ends heading away from
+// it, so without this he works the dials with his back to them.
+static constexpr float TOCK_FACING_MACHINE = 2.478368f;
+
+// The apparatus is two pieces standing one above the other, not two machines: a base
+// with a hood over it, both on the same bearing.
+Position const ApparatusBase = { -5054.8804f, 484.59897f, 402.78992f, 4.188790f };
+Position const ApparatusHood = { -5054.6700f, 485.01900f, 404.74835f, 4.188790f };
+
+// The helm is what is left of the gnome before the machine runs, and it lies where he
+// will be standing when it is done.
+Position const RecoveredHelmMark = { -5054.9653f, 484.48438f, 403.19894f, 4.4854965f };
+QuaternionData const RecoveredHelmRotation = QuaternionData(0.0f, 0.0f, -0.78260803f, 0.6225148f);
+
+Position const RecoveredGnomeMark = { -5054.9930f, 484.44790f, 403.16900f, 4.276057f };
+
+// He comes to on the spot the helm was lying on, gets up, and takes a single quick step
+// clear of the machine before he is turned to face Tock.
+Position const RecoveredGnomeStepOff = { -5055.3400f, 482.72000f, 402.63400f };
+static constexpr float RECOVERED_GNOME_FACING = 3.787364f;
+
+// And then walks off towards the camp, ignoring every word said to him.
+Position const RecoveredGnomeAway[] =
+{
+    { -5055.3400f, 482.72000f, 402.63400f },
+    { -5063.0796f, 476.95640f, 402.88318f },
+    { -5065.5796f, 475.20640f, 403.13318f },
+    { -5067.3193f, 473.69278f, 403.13235f }
+};
+
+// Every beat, in milliseconds from the moment the quest is handed in.
+static constexpr uint32 BEAT_TOCK_SAY_PROCESS      = 195;
+static constexpr uint32 BEAT_TOCK_EXCLAIM          = 3469;
+static constexpr uint32 BEAT_TOCK_TO_MACHINE       = 8304;
+static constexpr uint32 BEAT_TOCK_WORKING          = 9896;
+static constexpr uint32 BEAT_HELM_APPEARS          = 13156;
+static constexpr uint32 BEAT_TOCK_STOPS_WORKING    = 13577;
+static constexpr uint32 BEAT_TOCK_TO_DIAL          = 14392;
+static constexpr uint32 BEAT_TOCK_FACES_MACHINE    = 16817;
+static constexpr uint32 BEAT_TOCK_GOGGLES_ON       = 17996;
+static constexpr uint32 BEAT_TOCK_SAY_GOGGLES      = 18165;
+static constexpr uint32 BEAT_APPARATUS_APPEARS     = 22901;
+static constexpr uint32 BEAT_GNOME_APPEARS         = 29317;
+static constexpr uint32 BEAT_TOCK_STOPS_WORKING_2  = 29761;
+static constexpr uint32 BEAT_GNOME_SAY_WHAT        = 31941;
+static constexpr uint32 BEAT_TOCK_SAY_AMAZING      = 35575;
+static constexpr uint32 BEAT_GNOME_STEPS_OFF       = 36654;
+static constexpr uint32 BEAT_GNOME_STANDS          = 37096;
+static constexpr uint32 BEAT_TOCK_SAY_ALL_THERE    = 40456;
+static constexpr uint32 BEAT_GNOME_SAY_NOT_HERE    = 42885;
+static constexpr uint32 BEAT_TOCK_QUESTION         = 45173;
+static constexpr uint32 BEAT_GNOME_QUESTION        = 46412;
+static constexpr uint32 BEAT_GNOME_LEAVES          = 51252;
+static constexpr uint32 BEAT_TOCK_GOES_HOME        = 53697;
+static constexpr uint32 BEAT_TOCK_GOGGLES_OFF      = 54966;
+static constexpr uint32 BEAT_TOCK_SAY_COME_BACK    = 55042;
+static constexpr uint32 BEAT_GNOME_EXPLODES        = 57343;
+static constexpr uint32 BEAT_TOCK_SAY_MEDIC        = 58689;
+static constexpr uint32 BEAT_TOCK_SAY_ROCKET       = 61108;
+static constexpr uint32 BEAT_DEMONSTRATION_ENDS    = 61500;
+
+// How long each summon is held. These are timed despawns rather than scheduled cleanup
+// so that a run cut short -- a grid unload, a .reload -- still takes them away.
+static constexpr uint32 APPARATUS_DURATION_MS      = 8926;
+static constexpr uint32 RECOVERED_GNOME_LIFETIME   = 30623;
+static constexpr uint32 RECOVERED_HELM_DURATION    = 16;   // seconds
+
+// Tock Sprysprocket, who ends "What's Left Behind". Hand the quest in and he walks over
+// to his apparatus, works it up, pulls a whole gnome out of the sludge the player
+// brought him, and watches his subject walk off and detonate.
+//
+// Not SmartAI. The run summons a gameobject and three creatures, holds the gnome across
+// eight later beats to move, turn, stand, speak and blow him up, and forces a model off
+// an entry that rolls between two; a SMART_ACTION reaches none of that.
+//
+// The clock is fixed and nothing in it waits on an arrival or a cast, so the whole run
+// is scheduled up front from the hand-in.
+struct npc_tock_sprysprocket : public ScriptedAI
+{
+    npc_tock_sprysprocket(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _gnome.Clear();
+        _running = false;
+
+        me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE);
+        me->RemoveAurasDueToSpell(SPELL_GOGGLE_TRANSFORM);
+    }
+
+    void sQuestReward(Player* /*player*/, Quest const* quest, uint32 /*opt*/) override
+    {
+        if (quest->GetQuestId() != QUEST_WHATS_LEFT_BEHIND)
+            return;
+
+        // A second hand-in while the first is still running is ignored rather than
+        // queued. There is one apparatus and one mark to stand a gnome on, so a second
+        // run would put two of everything in the same square yard.
+        if (_running)
+            return;
+
+        StartDemonstration();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // No UpdateVictim and no melee. Tock is immune to players and creatures alike
+        // and never acquires a victim; the scheduler is the whole of what this adds.
+        _scheduler.Update(diff);
+    }
+
+private:
+
+    void StartDemonstration()
+    {
+        _running = true;
+        _gnome.Clear();
+
+        ScheduleTock();
+        ScheduleMachine();
+        ScheduleGnome();
+
+        Beat(BEAT_DEMONSTRATION_ENDS, [this] { _running = false; });
+    }
+
+    void ScheduleTock()
+    {
+        Beat(BEAT_TOCK_SAY_PROCESS, [this] { Talk(SAY_TOCK_PROCESS); });
+        Beat(BEAT_TOCK_EXCLAIM,     [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_EXCLAMATION); });
+
+        Beat(BEAT_TOCK_TO_MACHINE, [this]
+        {
+            WalkRoute(me, POINT_TOCK_MACHINE, TockToMachine,
+                std::extent<decltype(TockToMachine)>::value);
+        });
+
+        // Standing at the machine with his hands on it. This is a state rather than a
+        // gesture: it holds until it is cleared.
+        Beat(BEAT_TOCK_WORKING,       [this] { me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_USE_STANDING); });
+        Beat(BEAT_TOCK_STOPS_WORKING, [this] { me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE); });
+
+        Beat(BEAT_TOCK_TO_DIAL, [this]
+        {
+            WalkRoute(me, POINT_TOCK_DIAL, TockToDial,
+                std::extent<decltype(TockToDial)>::value);
+        });
+
+        // The leg above ends without a facing of its own, and this lands two and a half
+        // seconds after it -- well clear of the two-second spline, so nothing overwrites
+        // it.
+        Beat(BEAT_TOCK_FACES_MACHINE, [this] { me->SetFacingTo(TOCK_FACING_MACHINE); });
+
+        Beat(BEAT_TOCK_GOGGLES_ON, [this]
+        {
+            me->HandleEmoteCommand(EMOTE_ONESHOT_TALK);
+            me->CastSpell(me, SPELL_GOGGLE_TRANSFORM, true);
+            me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_USE_STANDING);
+        });
+
+        Beat(BEAT_TOCK_SAY_GOGGLES,     [this] { Talk(SAY_TOCK_GOGGLES); });
+        Beat(BEAT_TOCK_STOPS_WORKING_2, [this] { me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE); });
+        Beat(BEAT_TOCK_SAY_AMAZING,     [this] { Talk(SAY_TOCK_AMAZING); });
+        Beat(BEAT_TOCK_SAY_ALL_THERE,   [this] { Talk(SAY_TOCK_ALL_THERE); });
+        Beat(BEAT_TOCK_QUESTION,        [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_QUESTION); });
+
+        Beat(BEAT_TOCK_GOES_HOME, [this]
+        {
+            // Run, and straight: he hurries back to his post as the gnome walks off.
+            // The walk out left him facing the way he was travelling, and the line back
+            // to the spawn point happens to leave him on his spawn facing, so nothing
+            // has to turn him at the end of it.
+            me->SetWalk(false);
+            me->GetMotionMaster()->MovePoint(POINT_TOCK_HOME, me->GetHomePosition(), false);
+        });
+
+        Beat(BEAT_TOCK_GOGGLES_OFF,   [this] { me->RemoveAurasDueToSpell(SPELL_GOGGLE_TRANSFORM); });
+        Beat(BEAT_TOCK_SAY_COME_BACK, [this] { Talk(SAY_TOCK_COME_BACK); });
+        Beat(BEAT_TOCK_SAY_MEDIC,     [this] { Talk(SAY_TOCK_MEDIC); });
+        Beat(BEAT_TOCK_SAY_ROCKET,    [this] { Talk(SAY_TOCK_ROCKET_SCIENTIST); });
+    }
+
+    void ScheduleMachine()
+    {
+        Beat(BEAT_HELM_APPEARS, [this]
+        {
+            me->SummonGameObject(GO_RECOVERED_HELM, RecoveredHelmMark, RecoveredHelmRotation,
+                RECOVERED_HELM_DURATION);
+        });
+
+        Beat(BEAT_APPARATUS_APPEARS, [this]
+        {
+            SummonApparatus(ApparatusBase, SPELL_LIGHTNING_BEAM);
+            SummonApparatus(ApparatusHood, SPELL_PERSONNEL_LAUNCHER_STATE);
+        });
+    }
+
+    void SummonApparatus(Position const& mark, uint32 spell)
+    {
+        Creature* piece = me->SummonCreature(NPC_GNOME_RESTORATION_APPARATUS, mark,
+            TEMPSUMMON_TIMED_DESPAWN, APPARATUS_DURATION_MS);
+        if (!piece)
+            return;
+
+        // The entry rolls between two models and only one of them is this machine. Set
+        // before the creature has been through a grid update so that no client is shown
+        // the other one first.
+        piece->SetDisplayId(MODEL_RESTORATION_APPARATUS);
+        piece->CastSpell(piece, spell, true);
+    }
+
+    void ScheduleGnome()
+    {
+        Beat(BEAT_GNOME_APPEARS, [this]
+        {
+            // He arrives already sitting, from creature_template_addon: LoadCreaturesAddon
+            // runs inside Creature::UpdateEntry before the creature reaches the map, so
+            // setting the stand state here instead would show him upright for a frame and
+            // then sit him down.
+            Creature* gnome = me->SummonCreature(NPC_RECOVERED_GNOME, RecoveredGnomeMark,
+                TEMPSUMMON_TIMED_DESPAWN, RECOVERED_GNOME_LIFETIME);
+            if (!gnome)
+                return;
+
+            _gnome = gnome->GetGUID();
+            gnome->CastSpell(gnome, SPELL_LIGHTNING_NOVA, true);
+        });
+
+        Beat(BEAT_GNOME_SAY_WHAT, [this] { GnomeTalk(SAY_GNOME_WHAT_HAPPENED); });
+
+        Beat(BEAT_GNOME_STEPS_OFF, [this]
+        {
+            if (Creature* gnome = Gnome())
+            {
+                gnome->SetWalk(false);
+                gnome->GetMotionMaster()->MovePoint(POINT_GNOME_STEP_OFF, RecoveredGnomeStepOff, false);
+            }
+        });
+
+        Beat(BEAT_GNOME_STANDS, [this]
+        {
+            // Turned and then stood, in that order and in the same instant. The step off
+            // the mark ends looking at the machine, so a gnome that stands up on the
+            // bearing he arrived on has his back to the conversation.
+            if (Creature* gnome = Gnome())
+            {
+                gnome->SetFacingTo(RECOVERED_GNOME_FACING);
+                gnome->SetStandState(UNIT_STAND_STATE_STAND);
+            }
+        });
+
+        Beat(BEAT_GNOME_SAY_NOT_HERE, [this] { GnomeTalk(SAY_GNOME_NOT_HERE); });
+
+        Beat(BEAT_GNOME_QUESTION, [this]
+        {
+            if (Creature* gnome = Gnome())
+                gnome->HandleEmoteCommand(EMOTE_ONESHOT_QUESTION);
+        });
+
+        Beat(BEAT_GNOME_LEAVES, [this]
+        {
+            if (Creature* gnome = Gnome())
+                WalkRoute(gnome, POINT_GNOME_AWAY, RecoveredGnomeAway,
+                    std::extent<decltype(RecoveredGnomeAway)>::value);
+        });
+
+        Beat(BEAT_GNOME_EXPLODES, [this]
+        {
+            // The countdown carries the knockback that lifts him off his feet; the
+            // explosion is the blast itself. Both go off together and he is gone two and
+            // a half seconds later, on his own despawn timer.
+            if (Creature* gnome = Gnome())
+            {
+                gnome->CastSpell(gnome, SPELL_EXPLOSION, true);
+                gnome->CastSpell(gnome, SPELL_EXPLOSION_COUNTDOWN, true);
+            }
+        });
+    }
+
+    void GnomeTalk(uint8 group)
+    {
+        if (Creature* gnome = Gnome())
+            gnome->AI()->Talk(group);
+    }
+
+    Creature* Gnome()
+    {
+        return ObjectAccessor::GetCreature(*me, _gnome);
+    }
+
+    template<typename Action>
+    void Beat(uint32 offsetMs, Action&& action)
+    {
+        _scheduler.Schedule(Milliseconds(offsetMs), [action](TaskContext /*task*/) { action(); });
+    }
+
+    ObjectGuid _gnome;
+    bool _running = false;
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -3752,5 +4118,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_nevin_twistwrench_arrivals);
     RegisterCreatureAI(npc_captain_tread_sparknozzle_scene);
     RegisterCreatureAI(npc_image_of_razlo_crushcog);
+    RegisterCreatureAI(npc_tock_sprysprocket);
     new player_safe_guide_summoner();
 }

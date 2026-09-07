@@ -423,76 +423,100 @@ public:
 
 enum MultiBotMisc
 {
-    NPC_TOXIC_POOL              = 42563,
-    GO_TOXIC_POOL               = 203975,
+    NPC_TOXIC_POOL                = 42563,
+    GO_TOXIC_POOL                 = 203975,
 
-    SPELL_CLEAN_UP_TOXIC_POOL   = 79424,
-    SPELL_TOXIC_POOL_CREDIT     = 79422,
+    SPELL_CLEAN_UP_TOXIC_POOL     = 79424,
+    SPELL_TOXIC_POOL_CREDIT       = 79422,
+    SPELL_GREEN_FUELBOT_TRANSFORM = 94513,
 
-    SAY_MULTI_BOT_CLEANUP       = 0,
+    QUEST_A_JOB_FOR_THE_MULTI_BOT = 26205,
 
-    // both halves of a pool - the creature and the puddle - carry a 300s spawn timer
-    TOXIC_POOL_RESPAWN          = 300
+    SAY_MULTI_BOT_CLEANUP         = 0,
+
+    // both halves of a pool carry a 300s spawn timer
+    TOXIC_POOL_RESPAWN            = 300
 };
 
-// the bot only reaches a pool it is standing on top of, and the two halves share a position
+// the bot searches on the 3s tick of its own aura, and that dummy reaches 5 yards
 float const TOXIC_POOL_RANGE = 5.0f;
+// the creature and the gameobject share a spawn position
 float const TOXIC_POOL_PAIR_RANGE = 3.0f;
 
 struct npc_multi_bot : public ScriptedAI
 {
-    npc_multi_bot(Creature* creature) : ScriptedAI(creature), _checkTimer(2000) { }
+    npc_multi_bot(Creature* creature) : ScriptedAI(creature), _searchTimer(3000) { }
 
     void Reset() override
     {
-        _checkTimer = 2000;
+        _searchTimer = 3000;
     }
 
     void UpdateAI(uint32 diff) override
     {
-        if (_checkTimer > diff)
+        if (_searchTimer > diff)
         {
-            _checkTimer -= diff;
+            _searchTimer -= diff;
             return;
         }
 
-        _checkTimer = 1000;
+        _searchTimer = 3000;
 
-        Player* owner = me->GetCharmerOrOwnerPlayerOrPlayerItself();
-        if (!owner)
+        // one pool at a time, and nothing once the five objectives are in
+        if (!_pool.IsEmpty())
             return;
 
-        for (Creature* pool : me->FindNearestCreatures(NPC_TOXIC_POOL, TOXIC_POOL_RANGE))
+        Player* owner = me->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (!owner || owner->GetQuestStatus(QUEST_A_JOB_FOR_THE_MULTI_BOT) != QUEST_STATUS_INCOMPLETE)
+            return;
+
+        for (Creature* candidate : me->FindNearestCreatures(NPC_TOXIC_POOL, TOXIC_POOL_RANGE))
         {
-            if (!_cleanedPools.insert(pool->GetGUID()).second)
+            if (_cleanedPools.count(candidate->GetGUID()))
                 continue;
 
-            CleanUpPool(pool);
+            _pool = candidate->GetGUID();
+            _cleanedPools.insert(_pool);
+
+            Talk(SAY_MULTI_BOT_CLEANUP, candidate);
+            me->GetScheduler().Schedule(1s, [this](TaskContext /*context*/) { CleanUpPool(); });
             break;
         }
     }
 
 private:
     // one pool is worth one objective, so it has to be gone before the bot can reach it again
-    void CleanUpPool(Creature* pool)
+    void CleanUpPool()
     {
-        Talk(SAY_MULTI_BOT_CLEANUP);
+        Creature* pool = ObjectAccessor::GetCreature(*me, _pool);
+        _pool.Clear();
 
+        if (!pool)
+            return;
+
+        me->CastSpell(me, SPELL_GREEN_FUELBOT_TRANSFORM, true);
         me->CastSpell(pool, SPELL_CLEAN_UP_TOXIC_POOL, true);
         me->CastSpell(me, SPELL_TOXIC_POOL_CREDIT, true);
 
-        // a goober is flagged nodespawn on load, so the respawn delay has to be set here to hide it
+        // 79421 clears the puddle by activating it, but a goober loads flagged nodespawn
+        // with no respawn delay, so activating it here would leave it standing
         if (GameObject* puddle = pool->FindNearestGameObject(GO_TOXIC_POOL, TOXIC_POOL_PAIR_RANGE))
         {
             puddle->SetRespawnTime(TOXIC_POOL_RESPAWN);
             puddle->UpdateObjectVisibility();
         }
 
-        pool->DespawnOrUnsummon(2s, Seconds(TOXIC_POOL_RESPAWN));
+        pool->DespawnOrUnsummon(1600ms, Seconds(TOXIC_POOL_RESPAWN));
+
+        me->GetScheduler().Schedule(1500ms, [this](TaskContext /*context*/)
+        {
+            me->HandleEmoteCommand(EMOTE_ONESHOT_PARRY1H);
+        });
     }
 
     GuidSet _cleanedPools;
-    uint32 _checkTimer;
+    ObjectGuid _pool;
+    uint32 _searchTimer;
 };
 
 void AddSC_zone_gnomeregan()

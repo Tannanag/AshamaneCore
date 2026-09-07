@@ -181,6 +181,115 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum GnomereganRecruitSparring
+{
+    NPC_LIVING_CONTAMINATION_SPARRING = 43089
+};
+
+// The pairs stand 3.5 yards apart and the next pair along the path is about 13
+// away, so anything under that binds a recruit to its own target. FindNearestCreature
+// would pick the right one at any range; the tight value is what keeps a recruit from
+// adopting its neighbour's if one of the pair is ever missing.
+static constexpr float RECRUIT_SPARRING_RANGE = 10.0f;
+
+// Eight Gnomeregan Recruits line the path at the tram entrance, each shooting a
+// Living Contamination pinned three and a half yards in front of it. The
+// contamination fights back in melee and with Poison Bolt on a twelve second
+// cycle, which is SmartAI on 43089; only the recruit's half needs C++.
+//
+// It needs it for the same single reason as npc_safe_operative_sparring above: the
+// recruit must keep shooting and must never melee, and no stock AI can be told
+// that. Everything that AI documents applies here unchanged -- why AttackStart
+// passes false, and why the shot is 208193 wearing 85756's visual kits rather than
+// 85756 itself, which would replace the recruit's rifle with a foreign model for
+// the whole fight.
+//
+// One thing differs, and it is why this AI does not touch the emote state. The
+// Operative wears its pose in creature_addon.emote, which Unit::Attack wipes when a
+// fight starts, so that AI has to put it back. The recruit's pose is an aura
+// instead -- 78174, Emote State Hold Rifle, on creature_template_addon -- and its
+// rifle is drawn by SheathState 2 rather than by any emote. A recruit in combat
+// carries the aura throughout and has no emote state at all, so there is nothing
+// for the script to defend.
+//
+// Staying alive is not this script's job either. creature_sparring_template caps
+// 43089 and 43092 at 85%, and Unit::DealDamage applies the cap only to
+// non-player-owned attackers, so players still kill both normally.
+struct npc_gnomeregan_recruit_sparring : public ScriptedAI
+{
+    npc_gnomeregan_recruit_sparring(Creature* creature) : ScriptedAI(creature), _refusalLogged(false)
+    {
+        // They hold the line. Chasing would walk the firing line off the path.
+        SetCombatMovement(false);
+    }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        ScheduleShot();
+    }
+
+    // See npc_safe_operative_sparring::AttackStart. Passing false keeps the target,
+    // the threat and the combat state and drops only the melee claim, which this AI
+    // never makes good on: there is no DoMeleeAttackIfReady below.
+    void AttackStart(Unit* who) override
+    {
+        if (!who)
+            return;
+
+        if (me->Attack(who, false))
+            DoStartNoMovement(who);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // Deliberately outside the UpdateVictim guard: the firing line is already
+        // running before any player arrives, and the first shot is what starts the
+        // fight rather than something that happens once it has.
+        _scheduler.Update(diff);
+
+        if (!UpdateVictim())
+            return;
+    }
+
+private:
+    void ScheduleShot()
+    {
+        // Retail shoots on a 1.22 s median, tightly held -- the spread over eight
+        // recruits is 1.03 to 1.22 with nothing between shots but the cast itself.
+        _scheduler.Schedule(Milliseconds(1100), Milliseconds(1300), [this](TaskContext task)
+        {
+            if (Creature* partner = me->FindNearestCreature(NPC_LIVING_CONTAMINATION_SPARRING, RECRUIT_SPARRING_RANGE))
+            {
+                if (me->CastSpell(partner, SPELL_SHOOT, false))
+                {
+                    // Only on a cast that went out, so the muzzle never fires on a
+                    // shot no client saw.
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_START, 0, 0);
+                    me->SendPlaySpellVisualKit(SPELL_VISUAL_KIT_SHOT_FIRE, 0, 0);
+                }
+                else if (!_refusalLogged)
+                {
+                    // Once per recruit, not once per shot: at this cadence a
+                    // standing refusal would be eight lines a second. A refused cast
+                    // is otherwise indistinguishable from an AI that never ran,
+                    // which is the confusion that hid a minimum-range problem in the
+                    // Operative version for several passes.
+                    _refusalLogged = true;
+                    TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_sparring: %s refused %u at %s, dist %.1f",
+                        me->GetGUID().ToString().c_str(), uint32(SPELL_SHOOT),
+                        partner->GetGUID().ToString().c_str(), me->GetExactDist(partner));
+                }
+            }
+
+            task.Repeat(Milliseconds(1100), Milliseconds(1300));
+        });
+    }
+
+    TaskScheduler _scheduler;
+    bool _refusalLogged;
+};
+
 enum SafeOperativeBarker
 {
     // creature_text group for "Our men have secured the walkway."
@@ -3627,6 +3736,7 @@ struct npc_image_of_razlo_crushcog : public ScriptedAI
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
+    RegisterCreatureAI(npc_gnomeregan_recruit_sparring);
     RegisterCreatureAI(npc_safe_operative_barker);
     RegisterCreatureAI(npc_safe_operative_carrier);
     RegisterCreatureAI(npc_safe_operative_medic);

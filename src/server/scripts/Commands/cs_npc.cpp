@@ -255,6 +255,7 @@ public:
         static std::vector<ChatCommand> npcCommandTable =
         {
             { "info",      rbac::RBAC_PERM_COMMAND_NPC_INFO,      false, &HandleNpcInfoCommand,              ""       },
+            { "guid",      rbac::RBAC_PERM_COMMAND_NPC_INFO,      false, &HandleNpcGuidCommand,              ""       },
             { "near",      rbac::RBAC_PERM_COMMAND_NPC_NEAR,      false, &HandleNpcNearCommand,              ""       },
             { "move",      rbac::RBAC_PERM_COMMAND_NPC_MOVE,      false, &HandleNpcMoveCommand,              ""       },
             { "playemote", rbac::RBAC_PERM_COMMAND_NPC_PLAYEMOTE, false, &HandleNpcPlayEmoteCommand,         ""       },
@@ -713,6 +714,21 @@ public:
         creature->GetMotionMaster()->MoveFollow(player, PET_FOLLOW_DIST, creature->GetFollowAngle());
 
         handler->PSendSysMessage(LANG_CREATURE_FOLLOW_YOU_NOW, creature->GetName().c_str());
+        return true;
+    }
+
+    static bool HandleNpcGuidCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        Creature* target = handler->getSelectedCreature();
+
+        if (!target)
+        {
+            handler->SendSysMessage(LANG_SELECT_CREATURE);
+            handler->SetSentErrorMessage(true);
+            return false;
+        }
+
+        handler->PSendSysMessage("DB GUID: %s (Entry: %u)", std::to_string(target->GetSpawnId()).c_str(), target->GetEntry());
         return true;
     }
 

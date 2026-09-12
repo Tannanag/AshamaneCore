@@ -4331,6 +4331,334 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum DownWithCrushcog
+{
+    QUEST_DOWN_WITH_CRUSHCOG            = 26364,
+
+    NPC_HIGH_TINKER_MEKKATORQUE         = 42849,
+    NPC_GNOMEREGAN_INFANTRY_CAMP        = 42316,
+    NPC_DUN_MOROGH_MOUNTAINEER          = 13076,
+    NPC_BURDRAK_HARGLHELM               = 3162,
+
+    SPELL_PURPLE_FIREWORK               = 80070,
+    SPELL_COSMETIC_DRINK                = 70620,
+
+    SOUND_JARVI_SIGNAL                  = 23810,
+
+    SAY_JARVI_DEFEATED                  = 0,
+    SAY_JARVI_HEROES                    = 1,
+    SAY_MEKKATORQUE_NO_MORE             = 9,
+    SAY_INFANTRY_THREE_CHEERS           = 0,
+    SAY_INFANTRY_VICTORY                = 1,
+    SAY_MOUNTAINEER_DRINK               = 0,
+
+    POINT_MEKKATORQUE_CAMP              = 1
+};
+
+// Mekkatorque appears already on the move and walks in to stand in front of Jarvi.
+// Element 0 is the point he is standing on when the leg goes out, never a destination:
+// MoveSplineInit::Launch overwrites it with the mover's real position. The last segment
+// leaves him on the bearing he was summoned on, so nothing has to turn him.
+Position const MekkatorqueArrival = { -5359.35f, 306.451f, 394.57135f, 3.328238f };
+Position const MekkatorqueToCamp[] =
+{
+    { -5359.3500f, 306.45100f, 394.57135f },
+    { -5363.2793f, 305.70898f, 394.32860f },
+    { -5364.2617f, 305.52344f, 394.13776f },
+    { -5367.2090f, 304.96680f, 393.96814f },
+    { -5372.6900f, 303.94400f, 393.85977f }
+};
+
+// Jarvi turns this way while Mekkatorque walks in, and back to his spawn facing once
+// the speeches are over.
+static constexpr float JARVI_FACING_ARRIVAL = 1.815f;
+
+// Everyone standing within this of Jarvi joins in: the seven infantry and six
+// mountaineers clustered round the fire, and Burdrak at his stall. The mountaineer
+// sitting by the tent and the far infantry along the ridge stay out of it.
+static constexpr float CAMP_AUDIENCE_RANGE = 23.0f;
+
+// The crowd does not gesture in one instant. Each member fires somewhere in a
+// two-and-a-half-second window, so a wave reads as a ripple rather than a drill.
+static constexpr uint32 WAVE_SPREAD_MS = 2400;
+
+static constexpr uint32 MOUNTAINEER_DANCE_MS = 6000;
+
+// Every beat, in milliseconds from the moment the quest is handed in.
+static constexpr uint32 BEAT_JARVI_SAY_DEFEATED     = 200;
+static constexpr uint32 BEAT_MEKKATORQUE_ARRIVES    = 1400;
+static constexpr uint32 BEAT_JARVI_FACES_ARRIVAL    = 3000;
+static constexpr uint32 BEAT_JARVI_SIGNAL           = 6700;
+static constexpr uint32 BEAT_MEKKATORQUE_SPEAKS     = 9900;
+static constexpr uint32 BEAT_FIRST_CHEER            = 12000;
+static constexpr uint32 BEAT_MOUNTAINEER_DANCES     = 12400;
+static constexpr uint32 BEAT_MEKKATORQUE_TALKS      = 14000;
+static constexpr uint32 BEAT_JARVI_SAY_HEROES       = 14400;
+static constexpr uint32 BEAT_MOUNTAINEER_DRINKS     = 16800;
+static constexpr uint32 BEAT_SECOND_CHEER           = 19200;
+static constexpr uint32 BEAT_JARVI_FACES_HOME       = 19200;
+static constexpr uint32 BEAT_CELEBRATION_ENDS       = 22500;
+
+// Mekkatorque is gone with the last of the cheering. A timed despawn rather than a
+// scheduled one so that a run cut short still takes him away.
+static constexpr uint32 MEKKATORQUE_LIFETIME_MS     = BEAT_CELEBRATION_ENDS - BEAT_MEKKATORQUE_ARRIVES;
+
+// What the infantry throw when they cheer. Applause and cheers lead, with the odd shout
+// and roar; the weighting is by repetition.
+static constexpr Emote INFANTRY_CHEER_EMOTES[] =
+{
+    EMOTE_ONESHOT_APPLAUD, EMOTE_ONESHOT_APPLAUD,
+    EMOTE_ONESHOT_CHEER,   EMOTE_ONESHOT_CHEER,
+    EMOTE_ONESHOT_EXCLAMATION,
+    EMOTE_ONESHOT_ROAR
+};
+
+static constexpr Emote DWARF_CHEER_EMOTES[] =
+{
+    EMOTE_ONESHOT_APPLAUD,
+    EMOTE_ONESHOT_CHEER
+};
+
+template<size_t N>
+static Emote RollEmote(Emote const (&pool)[N])
+{
+    return pool[urand(0, N - 1)];
+}
+
+// Jarvi Shadowstep, who ends "Down with Crushcog!". Hand the quest in and High Tinker
+// Mekkatorque rides into the camp to declare the valley won, and the infantry and
+// mountaineers gathered round Jarvi's fire cheer the player by name -- twice, with a
+// firework, a dance and a toast between.
+//
+// Not SmartAI. The cast is a summon walked in by route plus whoever happens to be
+// standing near Jarvi, picked at hand-in and gestured at random; a SMART_ACTION can
+// address none of that per creature.
+//
+// The clock is fixed and nothing in it waits on an arrival, so the whole run is
+// scheduled up front from the hand-in.
+struct npc_jarvi_shadowstep : public ScriptedAI
+{
+    npc_jarvi_shadowstep(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _mekkatorque.Clear();
+        _player.Clear();
+        _audience.clear();
+        _running = false;
+    }
+
+    void sQuestReward(Player* player, Quest const* quest, uint32 /*opt*/) override
+    {
+        if (quest->GetQuestId() != QUEST_DOWN_WITH_CRUSHCOG)
+            return;
+
+        // A second hand-in while the first is still running is ignored rather than
+        // queued: one Mekkatorque on the mark at a time, and the crowd is still busy
+        // cheering the first player.
+        if (_running)
+            return;
+
+        StartCelebration(player);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // No UpdateVictim and no melee. Jarvi is immune to players and creatures alike
+        // and never acquires a victim; the scheduler is the whole of what this adds.
+        _scheduler.Update(diff);
+    }
+
+private:
+
+    void StartCelebration(Player* player)
+    {
+        _running = true;
+        _player = player->GetGUID();
+        _mekkatorque.Clear();
+
+        GatherAudience();
+
+        ScheduleJarvi();
+        ScheduleMekkatorque();
+        ScheduleCrowd();
+
+        Beat(BEAT_CELEBRATION_ENDS, [this] { _running = false; });
+    }
+
+    // Who is going to cheer, decided once so that both waves come from the same
+    // people. Anyone sitting or mid-stride is left alone -- a gesture from a seated
+    // dwarf stands him up, and one from a walking one snaps between animations.
+    void GatherAudience()
+    {
+        _audience.clear();
+
+        std::list<Creature*> crowd;
+        me->GetCreatureListWithEntryInGrid(crowd, NPC_GNOMEREGAN_INFANTRY_CAMP, CAMP_AUDIENCE_RANGE);
+        me->GetCreatureListWithEntryInGrid(crowd, NPC_DUN_MOROGH_MOUNTAINEER, CAMP_AUDIENCE_RANGE);
+        me->GetCreatureListWithEntryInGrid(crowd, NPC_BURDRAK_HARGLHELM, CAMP_AUDIENCE_RANGE);
+
+        for (Creature* member : crowd)
+            if (member->IsAlive() && !member->isMoving() && member->GetStandState() == UNIT_STAND_STATE_STAND)
+                _audience.push_back(member->GetGUID());
+    }
+
+    void ScheduleJarvi()
+    {
+        Beat(BEAT_JARVI_SAY_DEFEATED,  [this] { Talk(SAY_JARVI_DEFEATED, Celebrant()); });
+        Beat(BEAT_JARVI_FACES_ARRIVAL, [this] { me->SetFacingTo(JARVI_FACING_ARRIVAL); });
+        Beat(BEAT_JARVI_SIGNAL,        [this] { me->PlayDistanceSound(SOUND_JARVI_SIGNAL); });
+
+        Beat(BEAT_JARVI_SAY_HEROES, [this]
+        {
+            Talk(SAY_JARVI_HEROES);
+            me->CastSpell(me, SPELL_PURPLE_FIREWORK, true);
+        });
+
+        Beat(BEAT_JARVI_FACES_HOME, [this] { me->SetFacingTo(me->GetHomePosition().GetOrientation()); });
+    }
+
+    void ScheduleMekkatorque()
+    {
+        Beat(BEAT_MEKKATORQUE_ARRIVES, [this]
+        {
+            Creature* mekkatorque = me->SummonCreature(NPC_HIGH_TINKER_MEKKATORQUE, MekkatorqueArrival,
+                TEMPSUMMON_TIMED_DESPAWN, MEKKATORQUE_LIFETIME_MS);
+            if (!mekkatorque)
+                return;
+
+            _mekkatorque = mekkatorque->GetGUID();
+
+            // He is here to make a speech, not to be talked to: the gossip the entry
+            // carries belongs to the Mekkatorque standing at the front.
+            mekkatorque->RemoveFlag64(UNIT_NPC_FLAGS, UNIT_NPC_FLAG_GOSSIP);
+
+            WalkRoute(mekkatorque, POINT_MEKKATORQUE_CAMP, MekkatorqueToCamp,
+                std::extent<decltype(MekkatorqueToCamp)>::value);
+        });
+
+        Beat(BEAT_MEKKATORQUE_SPEAKS, [this]
+        {
+            if (Creature* mekkatorque = Mekkatorque())
+                mekkatorque->AI()->Talk(SAY_MEKKATORQUE_NO_MORE, Celebrant());
+        });
+
+        Beat(BEAT_MEKKATORQUE_TALKS, [this]
+        {
+            if (Creature* mekkatorque = Mekkatorque())
+                mekkatorque->HandleEmoteCommand(EMOTE_ONESHOT_TALK);
+        });
+    }
+
+    void ScheduleCrowd()
+    {
+        // Two of the infantry carry the lines, a mountaineer dances and another
+        // raises a drink; all of it is drawn at hand-in from whoever is there.
+        ObjectGuid threeCheers = PickFromAudience(NPC_GNOMEREGAN_INFANTRY_CAMP, ObjectGuid::Empty);
+        ObjectGuid victory     = PickFromAudience(NPC_GNOMEREGAN_INFANTRY_CAMP, threeCheers);
+        ObjectGuid dancer      = PickFromAudience(NPC_DUN_MOROGH_MOUNTAINEER, ObjectGuid::Empty);
+        ObjectGuid drinker     = PickFromAudience(NPC_DUN_MOROGH_MOUNTAINEER, dancer);
+
+        // The first wave is everyone; the dancer holds his state instead of throwing a
+        // gesture over it.
+        for (ObjectGuid const& guid : _audience)
+        {
+            if (guid == dancer)
+                continue;
+
+            uint8 line = guid == threeCheers ? SAY_INFANTRY_THREE_CHEERS
+                       : guid == victory     ? SAY_INFANTRY_VICTORY
+                       : NO_LINE;
+            Beat(BEAT_FIRST_CHEER + urand(0, WAVE_SPREAD_MS), [this, guid, line] { Cheer(guid, line); });
+        }
+
+        Beat(BEAT_MOUNTAINEER_DANCES, [this, dancer]
+        {
+            if (Creature* mountaineer = Member(dancer))
+                mountaineer->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_DANCE);
+        });
+
+        Beat(BEAT_MOUNTAINEER_DANCES + MOUNTAINEER_DANCE_MS, [this, dancer]
+        {
+            if (Creature* mountaineer = Member(dancer))
+                mountaineer->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE);
+        });
+
+        Beat(BEAT_MOUNTAINEER_DRINKS, [this, drinker]
+        {
+            if (Creature* mountaineer = Member(drinker))
+            {
+                mountaineer->CastSpell(mountaineer, SPELL_COSMETIC_DRINK, true);
+                mountaineer->AI()->Talk(SAY_MOUNTAINEER_DRINK);
+            }
+        });
+
+        // The second wave is the infantry alone; the dwarves have gone back to their
+        // drinks by then.
+        for (ObjectGuid const& guid : _audience)
+            if (guid.GetEntry() == NPC_GNOMEREGAN_INFANTRY_CAMP)
+                Beat(BEAT_SECOND_CHEER + urand(0, WAVE_SPREAD_MS), [this, guid] { Cheer(guid, NO_LINE); });
+    }
+
+    static constexpr uint8 NO_LINE = 0xFF;
+
+    void Cheer(ObjectGuid const& guid, uint8 line)
+    {
+        Creature* member = Member(guid);
+        if (!member)
+            return;
+
+        bool infantry = member->GetEntry() == NPC_GNOMEREGAN_INFANTRY_CAMP;
+        member->HandleEmoteCommand(infantry ? RollEmote(INFANTRY_CHEER_EMOTES) : RollEmote(DWARF_CHEER_EMOTES));
+
+        if (line != NO_LINE)
+            member->AI()->Talk(line, Celebrant());
+    }
+
+    // A random member of the audience with this entry, other than the one already
+    // spoken for. Empty when there is nobody left to pick.
+    ObjectGuid PickFromAudience(uint32 entry, ObjectGuid const& taken) const
+    {
+        std::vector<ObjectGuid> candidates;
+        for (ObjectGuid const& guid : _audience)
+            if (guid.GetEntry() == entry && guid != taken)
+                candidates.push_back(guid);
+
+        if (candidates.empty())
+            return ObjectGuid::Empty;
+
+        return candidates[urand(0, candidates.size() - 1)];
+    }
+
+    Creature* Member(ObjectGuid const& guid)
+    {
+        return guid.IsEmpty() ? nullptr : ObjectAccessor::GetCreature(*me, guid);
+    }
+
+    Creature* Mekkatorque()
+    {
+        return ObjectAccessor::GetCreature(*me, _mekkatorque);
+    }
+
+    Player* Celebrant()
+    {
+        return ObjectAccessor::GetPlayer(*me, _player);
+    }
+
+    template<typename Action>
+    void Beat(uint32 offsetMs, Action&& action)
+    {
+        _scheduler.Schedule(Milliseconds(offsetMs), [action](TaskContext /*task*/) { action(); });
+    }
+
+    ObjectGuid _mekkatorque;
+    ObjectGuid _player;
+    std::vector<ObjectGuid> _audience;
+    bool _running = false;
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -4353,5 +4681,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_tock_sprysprocket);
     RegisterCreatureAI(npc_explosive_fuse);
     RegisterGameObjectAI(go_frostmane_hold_detonator);
+    RegisterCreatureAI(npc_jarvi_shadowstep);
     new player_safe_guide_summoner();
 }

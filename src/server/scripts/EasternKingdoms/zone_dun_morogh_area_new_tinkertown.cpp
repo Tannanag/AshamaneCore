@@ -4107,6 +4107,7 @@ enum FinishinTheJob
     NPC_FROSTMANE_HOLD_TARGET           = 42739,
     NPC_EXPLOSIVE_FUSE                  = 42763,
     GO_POWDER_KEG                       = 204041,
+    GO_COLLAPSING_BOULDERS              = 204047,
 
     // A permanent dummy aura whose visual is the burning look on the fuse.
     SPELL_RED_BANISH_STATE              = 33343,
@@ -4125,13 +4126,21 @@ static Position const FusePileMark = { -5523.598f, 699.30615f, 375.99692f };
 // 8.65 yards in 1457 ms.
 static constexpr float FUSE_BURN_SPEED = 5.94f;
 
+// The rockfall at the tunnel mouth, 7 yards from the plunger.
+static Position const BouldersMark = { -5520.566f, 693.2934f, 378.2548f, 1.9896724f };
+static QuaternionData const BouldersRotation = QuaternionData(0.0f, 0.0f, 0.8386698f, 0.54464024f);
+
 // From the press to the fuse setting off:
 static constexpr uint32 BEAT_PLUNGER_ANIM  = 1100;
 static constexpr uint32 BEAT_FUSE_LIT      = 2000;
 static constexpr uint32 BEAT_KEGS_BLOW     = 4850;
+static constexpr uint32 BEAT_BOULDERS_FALL = 7600;
 // and from the fuse lighting to its running and going out.
 static constexpr uint32 FUSE_LIT_TO_RUN    = 1200;
 static constexpr uint32 FUSE_LIFETIME_MS   = 4850;
+// From the rockfall to the rocks settling (the IN_USE flag comes off) and clearing.
+static constexpr uint32 BOULDERS_SETTLE_MS   = 6700;
+static constexpr uint32 BOULDERS_LIFETIME_MS = 14900;
 
 // How far the detonator reaches for the trigger creature and the kegs. The trigger
 // stands 10 yards from the plunger and the far edge of the pile 15.
@@ -4143,7 +4152,15 @@ static constexpr int32 DETONATOR_RESPAWN_SECS = 30;
 // The Detonator (204042) that ends "Finishin' the Job". Pressing it lights an
 // Explosive Fuse beside the plunger, which runs to the powder kegs; when it gets there
 // the Frostmane Hold Target standing in the pile sets every keg off, and the plunger
-// disappears with them.
+// disappears with them. As the kegs go the tunnel mouth caves in: the Collapsing
+// Boulders appear for fifteen seconds and are cleared away again.
+//
+// The boulders have no spawn; the plunger summons them. Summoned from a gameobject
+// they have no owner, so nothing but this script takes them away: the timed path in
+// GameObject::Update only ever hides an ownerless summon, and a creature-owned one
+// walks the respawn branch and stays. Their lifetime is a beat here with Delete at
+// the end of it. Summoning from the plunger also puts them in its phase, and the
+// template addon gives them their flags (IN_USE | NODESPAWN) and faction on Create.
 //
 // The goober does the quest credit, the IN_USE flag and the pressed state on its own
 // -- GossipHello returns false so that Use carries on into all of that. What it cannot
@@ -4164,6 +4181,7 @@ struct go_frostmane_hold_detonator : public GameObjectAI
     void Reset() override
     {
         _scheduler.CancelAll();
+        ClearBoulders();
         _running = false;
     }
 
@@ -4199,6 +4217,23 @@ struct go_frostmane_hold_detonator : public GameObjectAI
         {
             BlowKegs();
             HidePlunger();
+        });
+
+        _scheduler.Schedule(Milliseconds(BEAT_BOULDERS_FALL), [this](TaskContext /*task*/)
+        {
+            if (GameObject* boulders = go->SummonGameObject(GO_COLLAPSING_BOULDERS, BouldersMark, BouldersRotation, 0))
+                _boulders = boulders->GetGUID();
+        });
+
+        _scheduler.Schedule(Milliseconds(BEAT_BOULDERS_FALL + BOULDERS_SETTLE_MS), [this](TaskContext /*task*/)
+        {
+            if (GameObject* boulders = FindBoulders())
+                boulders->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+        });
+
+        _scheduler.Schedule(Milliseconds(BEAT_BOULDERS_FALL + BOULDERS_LIFETIME_MS), [this](TaskContext /*task*/)
+        {
+            ClearBoulders();
         });
 
         return false;
@@ -4246,7 +4281,22 @@ private:
         go->UpdateObjectVisibility();
     }
 
+    GameObject* FindBoulders() const
+    {
+        if (_boulders.IsEmpty())
+            return nullptr;
+        return ObjectAccessor::GetGameObject(*go, _boulders);
+    }
+
+    void ClearBoulders()
+    {
+        if (GameObject* boulders = FindBoulders())
+            boulders->Delete();
+        _boulders.Clear();
+    }
+
     bool _running = false;
+    ObjectGuid _boulders;
     TaskScheduler _scheduler;
 };
 

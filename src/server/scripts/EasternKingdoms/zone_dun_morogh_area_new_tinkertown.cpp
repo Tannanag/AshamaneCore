@@ -18,6 +18,8 @@
 #include "ScriptMgr.h"
 #include "Creature.h"
 #include "Duration.h"
+#include "GameObject.h"
+#include "GameObjectAI.h"
 #include "GameObjectData.h"
 #include "Log.h"
 #include "Map.h"
@@ -25,6 +27,7 @@
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
 #include "ObjectAccessor.h"
+#include "PassiveAI.h"
 #include "Player.h"
 #include "QuestDef.h"
 #include "ScriptedCreature.h"
@@ -4099,6 +4102,185 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum FinishinTheJob
+{
+    NPC_FROSTMANE_HOLD_TARGET           = 42739,
+    NPC_EXPLOSIVE_FUSE                  = 42763,
+    GO_POWDER_KEG                       = 204041,
+
+    // A permanent dummy aura whose visual is the burning look on the fuse.
+    SPELL_RED_BANISH_STATE              = 33343,
+    // SPELL_EFFECT_ACTIVATE_OBJECT on every gameobject within 15 yards of the caster.
+    // This core's EffectActivateObject ignores the action id and calls
+    // GameObject::Use, which for a keg is the right thing: Data3 holds it in use for
+    // three seconds and Data5 makes it consumable, so it despawns on its own and
+    // comes back on the spawn's timer.
+    SPELL_TRIGGER_POWDER_KEG_EXPLOSIONS = 79695
+};
+
+// The fuse lights beside the plunger and runs to the middle of the pile.
+static Position const FuseLitMark  = { -5522.96f, 707.93054f, 376.69687f, 4.607669f };
+static Position const FusePileMark = { -5523.598f, 699.30615f, 375.99692f };
+
+// 8.65 yards in 1457 ms.
+static constexpr float FUSE_BURN_SPEED = 5.94f;
+
+// From the press to the fuse setting off:
+static constexpr uint32 BEAT_PLUNGER_ANIM  = 1100;
+static constexpr uint32 BEAT_FUSE_LIT      = 2000;
+static constexpr uint32 BEAT_KEGS_BLOW     = 4850;
+// and from the fuse lighting to its running and going out.
+static constexpr uint32 FUSE_LIT_TO_RUN    = 1200;
+static constexpr uint32 FUSE_LIFETIME_MS   = 4850;
+
+// How far the detonator reaches for the trigger creature and the kegs. The trigger
+// stands 10 yards from the plunger and the far edge of the pile 15.
+static constexpr float DETONATOR_REACH = 20.0f;
+
+// The plunger is gone this long once the kegs have blown.
+static constexpr int32 DETONATOR_RESPAWN_SECS = 30;
+
+// The Detonator (204042) that ends "Finishin' the Job". Pressing it lights an
+// Explosive Fuse beside the plunger, which runs to the powder kegs; when it gets there
+// the Frostmane Hold Target standing in the pile sets every keg off, and the plunger
+// disappears with them.
+//
+// The goober does the quest credit, the IN_USE flag and the pressed state on its own
+// -- GossipHello returns false so that Use carries on into all of that. What it cannot
+// do is hold a clock, and the kegs are not this object: a goober with no script only
+// ever acts on itself.
+//
+// The plunger is a goober with neither Data5 nor Data11, so GameObject::LoadFromDB
+// marks it NODESPAWN and zeroes its respawn delay -- the loot state alone will never
+// take it away. SetRespawnTime with UpdateObjectVisibility does, and the GO_READY
+// branch of GameObject::Update brings it back. The loot state has to be put back to
+// GO_READY at the same moment: left at GO_ACTIVATED, the twenty-second auto-close
+// would fire while it is hidden, walk the GO_JUST_DEACTIVATED branch, and re-arm the
+// same respawn on top of the one already running.
+struct go_frostmane_hold_detonator : public GameObjectAI
+{
+    go_frostmane_hold_detonator(GameObject* go) : GameObjectAI(go) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _running = false;
+    }
+
+    bool GossipHello(Player* /*player*/, bool reportUse) override
+    {
+        if (reportUse)
+            return false;
+
+        // The client will not press a plunger flagged IN_USE, and after the kegs go
+        // it is not there to press; this covers the gap between the two.
+        if (_running)
+            return true;
+
+        _running = true;
+
+        _scheduler.Schedule(Milliseconds(BEAT_PLUNGER_ANIM), [this](TaskContext /*task*/)
+        {
+            go->SendCustomAnim(0);
+        });
+
+        _scheduler.Schedule(Milliseconds(BEAT_FUSE_LIT), [this](TaskContext /*task*/)
+        {
+            // The trigger lights it, not the plunger. WorldObject::SummonCreature
+            // hands Map::SummonCreature ToUnit() as the summoner, so from a
+            // gameobject that is null: the summon inherits no phase and its
+            // IsSummonedBy never runs. From the trigger, which shares the plunger's
+            // phase, it gets both.
+            if (Creature* trigger = FindTrigger())
+                trigger->SummonCreature(NPC_EXPLOSIVE_FUSE, FuseLitMark, TEMPSUMMON_TIMED_DESPAWN, FUSE_LIFETIME_MS);
+        });
+
+        _scheduler.Schedule(Milliseconds(BEAT_KEGS_BLOW), [this](TaskContext /*task*/)
+        {
+            BlowKegs();
+            HidePlunger();
+        });
+
+        return false;
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    Creature* FindTrigger() const
+    {
+        return go->FindNearestCreature(NPC_FROSTMANE_HOLD_TARGET, DETONATOR_REACH);
+    }
+
+    void BlowKegs()
+    {
+        Creature* trigger = FindTrigger();
+        if (!trigger)
+            return;
+
+        // TRIGGERED_FULL_MASK carries TRIGGERED_CAST_DIRECTLY, so the spell lands
+        // inside this call: Spell::prepare casts at once, the gameobject hits are
+        // handled in the same pass, and Map::ScriptCommandStart runs a zero-delay
+        // ACTIVATE_OBJECT on the spot. By the next line every keg has been Used.
+        trigger->CastSpell(trigger, SPELL_TRIGGER_POWDER_KEG_EXPLOSIONS, true);
+
+        // Use put the kegs in GO_STATE_ACTIVE; blown kegs show the other state. The
+        // deactivation three seconds on sets GO_STATE_READY itself, right before the
+        // despawn, so this holds exactly as long as it should.
+        std::list<GameObject*> kegs;
+        go->GetGameObjectListWithEntryInGrid(kegs, GO_POWDER_KEG, DETONATOR_REACH);
+        for (GameObject* keg : kegs)
+            if (keg->getLootState() == GO_ACTIVATED)
+                keg->SetGoState(GO_STATE_ACTIVE_ALTERNATIVE);
+    }
+
+    void HidePlunger()
+    {
+        go->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+        go->SetGoState(GO_STATE_READY);
+        go->SetLootState(GO_READY);
+        go->SetRespawnTime(DETONATOR_RESPAWN_SECS);
+        go->UpdateObjectVisibility();
+    }
+
+    bool _running = false;
+    TaskScheduler _scheduler;
+};
+
+// The Explosive Fuse (42763) the detonator lights. It has no spawn of its own; it
+// appears beside the plunger already burning, waits a moment, and runs into the
+// middle of the kegs, where the timed despawn takes it two seconds after they blow.
+struct npc_explosive_fuse : public PassiveAI
+{
+    npc_explosive_fuse(Creature* creature) : PassiveAI(creature) { }
+
+    void IsSummonedBy(Unit* /*summoner*/) override
+    {
+        me->CastSpell(me, SPELL_RED_BANISH_STATE, true);
+
+        _scheduler.Schedule(Milliseconds(FUSE_LIT_TO_RUN), [this](TaskContext /*task*/)
+        {
+            // Not MovePoint: that runs at the template's speed, and the fuse crawls
+            // along the ground rather than runs.
+            Movement::MoveSplineInit init(me);
+            init.MoveTo(FusePileMark.GetPositionX(), FusePileMark.GetPositionY(), FusePileMark.GetPositionZ());
+            init.SetVelocity(FUSE_BURN_SPEED);
+            init.Launch();
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -4119,5 +4301,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_captain_tread_sparknozzle_scene);
     RegisterCreatureAI(npc_image_of_razlo_crushcog);
     RegisterCreatureAI(npc_tock_sprysprocket);
+    RegisterCreatureAI(npc_explosive_fuse);
+    RegisterGameObjectAI(go_frostmane_hold_detonator);
     new player_safe_guide_summoner();
 }

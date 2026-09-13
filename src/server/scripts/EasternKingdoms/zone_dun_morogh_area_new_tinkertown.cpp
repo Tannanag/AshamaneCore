@@ -31,6 +31,7 @@
 #include "Player.h"
 #include "QuestDef.h"
 #include "ScriptedCreature.h"
+#include "SpellInfo.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
 #include "Vehicle.h"
@@ -4659,6 +4660,141 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum PaintItBlack
+{
+    SPELL_BLIND_SENTRY                  = 79781,
+    SPELL_WAILING_SIREN                 = 84152,
+
+    NPC_SENTRY_BOT_BLINDED_CREDIT       = 42796,
+
+    SAY_SENTRY_SHUTDOWN                 = 0
+};
+
+// The bot stumbles off blind for this long, then stands where it stopped.
+static constexpr uint32 SENTRY_BLIND_DASH_MS        = 1500;
+// ...keels over...
+static constexpr uint32 BEAT_SENTRY_SHUTDOWN_POSE   = 1800;
+// ...and is gone.
+static constexpr uint32 SENTRY_SHUTDOWN_MS          = 5000;
+
+// The siren goes off when the target is inside this, on the same clock as the
+// smart_scripts row it replaces.
+static constexpr float SENTRY_SIREN_RANGE           = 8.0f;
+
+// Crushcog's Sentry-Bot, the target of the Paintinator in "Paint it Black". A hit
+// from Blind Sentry credits the quest and shuts the bot down over five seconds: it
+// stops fighting, turns on the player, sounds its alarm, careers off blind for a
+// second and a half, keels over and despawns.
+//
+// Not SmartAI. The bot is in combat with the player when the paint lands, and
+// SmartAI's UpdateAI keeps calling UpdateVictim, which would either swing at the
+// player through the whole shutdown or, with the threat list cleared, evade and run
+// the bot home. SMART_ACTION_FLEE cannot stand in for the dash either -- it makes
+// the target flee from the bot, not the bot from the player.
+struct npc_crushcog_sentry_bot : public ScriptedAI
+{
+    npc_crushcog_sentry_bot(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _blinded = false;
+        _scheduler.CancelAll();
+        me->SetReactState(REACT_AGGRESSIVE);
+    }
+
+    void EnterCombat(Unit* /*who*/) override
+    {
+        if (_blinded)
+            return;
+
+        _scheduler.Schedule(Milliseconds(1), [this](TaskContext siren)
+        {
+            Unit* victim = me->GetVictim();
+            if (!victim || !me->IsWithinDistInMap(victim, SENTRY_SIREN_RANGE))
+            {
+                siren.Repeat(Milliseconds(500));
+                return;
+            }
+
+            DoCast(victim, SPELL_WAILING_SIREN);
+            siren.Repeat(Seconds(15), Seconds(25));
+        });
+    }
+
+    void SpellHit(Unit* caster, SpellInfo const* spell) override
+    {
+        if (spell->Id != SPELL_BLIND_SENTRY || _blinded)
+            return;
+
+        Player* player = caster->GetCharmerOrOwnerPlayerOrPlayerItself();
+        if (!player)
+            return;
+
+        player->KilledMonsterCredit(NPC_SENTRY_BOT_BLINDED_CREDIT);
+
+        _blinded = true;
+        _scheduler.CancelAll();
+        me->SetReactState(REACT_PASSIVE);
+        me->AttackStop();
+        me->InterruptNonMeleeSpells(false);
+
+        // Whatever the bot was doing -- chasing, roaming, walking its route -- ends
+        // here, or it comes back the moment the dash does.
+        me->GetMotionMaster()->Clear(false);
+        me->GetMotionMaster()->MoveIdle();
+
+        me->SetFacingToObject(player);
+        Talk(SAY_SENTRY_SHUTDOWN, player);
+        me->GetMotionMaster()->MoveFleeing(player, SENTRY_BLIND_DASH_MS);
+
+        _scheduler.Schedule(Milliseconds(BEAT_SENTRY_SHUTDOWN_POSE), [this](TaskContext /*task*/)
+        {
+            me->StopMoving();
+            me->SetStandState(UNIT_STAND_STATE_DEAD);
+        });
+
+        // Timed from here rather than scheduled, so the bot leaves even if the
+        // player finishes it off first.
+        me->DespawnOrUnsummon(SENTRY_SHUTDOWN_MS);
+    }
+
+    void AttackStart(Unit* who) override
+    {
+        if (!_blinded)
+            ScriptedAI::AttackStart(who);
+    }
+
+    void MoveInLineOfSight(Unit* who) override
+    {
+        if (!_blinded)
+            ScriptedAI::MoveInLineOfSight(who);
+    }
+
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (!_blinded)
+            ScriptedAI::EnterEvadeMode(why);
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        if (_blinded)
+        {
+            _scheduler.Update(diff);
+            return;
+        }
+
+        if (!UpdateVictim())
+            return;
+
+        _scheduler.Update(diff);
+        DoMeleeAttackIfReady();
+    }
+
+    bool _blinded = false;
+    TaskScheduler _scheduler;
+};
+
 void AddSC_dun_morogh_area_new_tinkertown()
 {
     RegisterCreatureAI(npc_safe_operative_sparring);
@@ -4682,5 +4818,6 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_explosive_fuse);
     RegisterGameObjectAI(go_frostmane_hold_detonator);
     RegisterCreatureAI(npc_jarvi_shadowstep);
+    RegisterCreatureAI(npc_crushcog_sentry_bot);
     new player_safe_guide_summoner();
 }

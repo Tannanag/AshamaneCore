@@ -3395,6 +3395,150 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum MountedMountaineerRide
+{
+    POINT_MOUNTAINEER_END   = 1,
+    SPELL_MOUNTAINEER_SHOOT = 6660,
+
+    GROUP_MOUNTAINEER_SHOOT = 1
+};
+
+// The pace of the ride, on the unit rather than the template: the entry's own run is
+// slower than this and the other spawns of it keep that.
+static constexpr float MOUNTAINEER_RUN_SPEED = 9.7f;
+
+// The rider sets off almost as soon as it appears, and the next one appears a few seconds
+// after it is gone: 850 yards at this pace is a minute and a half, and the gap on top of
+// it is rolled per run so the cycle drifts against everything else on the road.
+static constexpr Milliseconds MOUNTAINEER_SPAWN_TO_RIDE = Milliseconds(1000);
+static constexpr uint32 MOUNTAINEER_RESPAWN_MIN_SECONDS = 5;
+static constexpr uint32 MOUNTAINEER_RESPAWN_MAX_SECONDS = 11;
+
+// Brewnall to Kharanos, north to south: out of the village, down the whole length of the
+// main road past the Mountaineer post and into Kharanos, where the rider is gone. Element 0
+// is the spawn, overwritten by Launch like the recruits' and travelers' are.
+Position const MountedMountaineerRoad[] =
+{
+    { -5393.550f,   307.573f, 394.662f },
+    { -5398.530f,   289.731f, 395.614f },
+    { -5397.200f,   275.851f, 395.979f },
+    { -5402.250f,   262.693f, 396.366f },
+    { -5426.380f,   229.472f, 395.921f },
+    { -5432.300f,   212.200f, 395.309f },
+    { -5433.160f,   166.880f, 394.543f },
+    { -5422.180f,   143.677f, 393.636f },
+    { -5414.520f,   113.146f, 393.385f },
+    { -5405.240f,    78.604f, 393.724f },
+    { -5389.790f,    49.865f, 392.328f },
+    { -5378.640f,    15.778f, 392.254f },
+    { -5377.310f,   -22.033f, 392.626f },
+    { -5377.400f,   -57.134f, 392.187f },
+    { -5385.880f,   -81.458f, 393.009f },
+    { -5397.920f,   -95.115f, 394.360f },
+    { -5408.740f,  -115.679f, 395.199f },
+    { -5413.710f,  -144.663f, 397.582f },
+    { -5415.070f,  -173.470f, 399.502f },
+    { -5416.690f,  -206.747f, 401.255f },
+    { -5418.010f,  -224.663f, 401.516f },
+    { -5419.220f,  -238.191f, 401.744f },
+    { -5424.200f,  -254.884f, 401.171f },
+    { -5423.600f,  -287.741f, 400.644f },
+    { -5421.630f,  -317.769f, 399.920f },
+    { -5420.150f,  -345.177f, 398.828f },
+    { -5427.140f,  -373.990f, 398.633f },
+    { -5437.970f,  -389.465f, 398.630f },
+    { -5454.800f,  -405.455f, 398.810f },
+    { -5471.060f,  -414.226f, 400.799f },
+    { -5486.110f,  -416.292f, 401.562f },
+    { -5507.610f,  -423.498f, 402.735f },
+    { -5516.780f,  -444.911f, 402.694f },
+    { -5522.748f,  -459.754f, 401.672f }
+};
+
+// A Mounted Ironforge Mountaineer riding from Brewnall Village down to Kharanos. It appears
+// in the village, rides the road to the far end and is gone; its respawn brings the next
+// one a few seconds later, so there is one on the road nearly all the time. One-way for
+// the reason the recruits and travelers are: a waypoint path loops.
+//
+// It only ever fights from the saddle. Something that attacks it is shot at while the ride
+// goes on, and once nothing has hurt it for a while the ride is all that is left; nothing
+// ever turns it round or sends it home.
+struct npc_mounted_ironforge_mountaineer : public ScriptedAI
+{
+    npc_mounted_ironforge_mountaineer(Creature* creature) : ScriptedAI(creature),
+        _onPost(creature->GetHomePosition().GetExactDist2d(&MountedMountaineerRoad[0]) < 5.0f) { }
+
+    // No chase, ever: the target is taken without melee so the client is not told a rifleman
+    // has closed to melee, and the spline underneath is left alone.
+    void AttackStart(Unit* who) override
+    {
+        if (who)
+            me->Attack(who, false);
+    }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        me->SetReactState(REACT_DEFENSIVE);
+
+        if (!_onPost)
+        {
+            TC_LOG_ERROR("scripts.ai", "npc_mounted_ironforge_mountaineer: %s is not within five yards of the Brewnall post and will not move",
+                me->GetGUID().ToString().c_str());
+            return;
+        }
+
+        me->SetSpeed(MOVE_RUN, MOUNTAINEER_RUN_SPEED);
+
+        _scheduler.Schedule(MOUNTAINEER_SPAWN_TO_RIDE, [this](TaskContext /*task*/)
+        {
+            me->GetMotionMaster()->MoveSmoothPath(POINT_MOUNTAINEER_END, MountedMountaineerRoad,
+                std::extent<decltype(MountedMountaineerRoad)>::value, false);
+        });
+    }
+
+    void EnterCombat(Unit* /*who*/) override
+    {
+        _scheduler.Schedule(Milliseconds(urand(2300, 3900)), GROUP_MOUNTAINEER_SHOOT, [this](TaskContext task)
+        {
+            if (Unit* victim = me->GetVictim())
+                DoCast(victim, SPELL_MOUNTAINEER_SHOOT);
+            task.Repeat(Milliseconds(2300), Milliseconds(3900));
+        });
+    }
+
+    // Evading is only ever the end of the fight, never a trip home: the ride is where it is.
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        if (!_EnterEvadeMode(why))
+            return;
+
+        _scheduler.CancelGroup(GROUP_MOUNTAINEER_SHOOT);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != EFFECT_MOTION_TYPE || id != POINT_MOUNTAINEER_END)
+            return;
+
+        _scheduler.CancelAll();
+        me->DespawnOrUnsummon(0, Seconds(urand(MOUNTAINEER_RESPAWN_MIN_SECONDS, MOUNTAINEER_RESPAWN_MAX_SECONDS)));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+
+        if (me->IsInCombat())
+            UpdateVictim();
+    }
+
+private:
+    bool _onPost;
+    TaskScheduler _scheduler;
+};
+
 enum MonkTraining
 {
     NPC_MONK_TRAINEE_TIMEKEEPER     = 63239,
@@ -6032,6 +6176,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_safe_guide);
     RegisterCreatureAI(npc_gnomeregan_recruit_column);
     RegisterCreatureAI(npc_gnome_traveler_column);
+    RegisterCreatureAI(npc_mounted_ironforge_mountaineer);
     RegisterCreatureAI(npc_xi_monk_trainer);
     RegisterCreatureAI(npc_monk_trainee);
     RegisterCreatureAI(npc_nevin_twistwrench_arrivals);

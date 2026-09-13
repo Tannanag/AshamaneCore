@@ -4315,6 +4315,7 @@ enum TockRestoration
     NPC_RECOVERED_GNOME             = 43033,
 
     GO_RECOVERED_HELM               = 204255,
+    GO_APPARATUS_CONTROL_CONSOLE    = 204266,
 
     QUEST_WHATS_LEFT_BEHIND         = 26264,
 
@@ -4412,10 +4413,14 @@ static constexpr uint32 BEAT_TOCK_STOPS_WORKING    = 13577;
 static constexpr uint32 BEAT_TOCK_TO_DIAL          = 14392;
 static constexpr uint32 BEAT_TOCK_FACES_MACHINE    = 16817;
 static constexpr uint32 BEAT_TOCK_GOGGLES_ON       = 17996;
+static constexpr uint32 BEAT_CONSOLE_OPENS         = 17996;
 static constexpr uint32 BEAT_TOCK_SAY_GOGGLES      = 18165;
 static constexpr uint32 BEAT_APPARATUS_APPEARS     = 22901;
 static constexpr uint32 BEAT_GNOME_APPEARS         = 29317;
+static constexpr uint32 BEAT_CONSOLE_CLOSES        = 29430;
+static constexpr uint32 BEAT_HELM_GONE             = 29430;
 static constexpr uint32 BEAT_TOCK_STOPS_WORKING_2  = 29761;
+static constexpr uint32 BEAT_CONSOLE_RELEASED      = 30687;
 static constexpr uint32 BEAT_GNOME_SAY_WHAT        = 31941;
 static constexpr uint32 BEAT_TOCK_SAY_AMAZING      = 35575;
 static constexpr uint32 BEAT_GNOME_STEPS_OFF       = 36654;
@@ -4433,11 +4438,16 @@ static constexpr uint32 BEAT_TOCK_SAY_MEDIC        = 58689;
 static constexpr uint32 BEAT_TOCK_SAY_ROCKET       = 61108;
 static constexpr uint32 BEAT_DEMONSTRATION_ENDS    = 61500;
 
-// How long each summon is held. These are timed despawns rather than scheduled cleanup
-// so that a run cut short -- a grid unload, a .reload -- still takes them away.
+// How long each creature summon is held. These are timed despawns rather than scheduled
+// cleanup so that a run cut short -- a grid unload, a .reload -- still takes them away.
+// The helm is not: a creature-owned gameobject never goes on its timer on this core (the
+// expiry takes the respawn branch and leaves it standing), so it is held by guid and
+// deleted at its beat. A grid unload takes it with Tock, and Reset() covers a .reload.
 static constexpr uint32 APPARATUS_DURATION_MS      = 8926;
 static constexpr uint32 RECOVERED_GNOME_LIFETIME   = 30623;
-static constexpr uint32 RECOVERED_HELM_DURATION    = 16;   // seconds
+
+// How close Tock stands to the console when he works it.
+static constexpr float CONSOLE_SEARCH_RANGE        = 5.0f;
 
 // Tock Sprysprocket, who ends "What's Left Behind". Hand the quest in and he walks over
 // to his apparatus, works it up, pulls a whole gnome out of the sludge the player
@@ -4461,6 +4471,9 @@ struct npc_tock_sprysprocket : public ScriptedAI
 
         me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE);
         me->RemoveAurasDueToSpell(SPELL_GOGGLE_TRANSFORM);
+
+        ClearHelm();
+        ReleaseConsole();
     }
 
     void sQuestReward(Player* /*player*/, Quest const* quest, uint32 /*opt*/) override
@@ -4490,6 +4503,8 @@ private:
     {
         _running = true;
         _gnome.Clear();
+        _helm.Clear();
+        _console.Clear();
 
         ScheduleTock();
         ScheduleMachine();
@@ -4532,6 +4547,30 @@ private:
             me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_USE_STANDING);
         });
 
+        // The console opens the instant his hands go on it and stays open for the whole
+        // eleven and a half seconds he works it -- longer than its own ten-second
+        // auto-close -- so the state is written directly rather than going through
+        // UseDoorOrButton and its timer. The flag comes off a second and a quarter after
+        // it shuts.
+        Beat(BEAT_CONSOLE_OPENS, [this]
+        {
+            GameObject* console = me->FindNearestGameObject(GO_APPARATUS_CONTROL_CONSOLE, CONSOLE_SEARCH_RANGE);
+            if (!console)
+                return;
+
+            _console = console->GetGUID();
+            console->SetFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+            console->SetGoState(GO_STATE_ACTIVE);
+        });
+
+        Beat(BEAT_CONSOLE_CLOSES, [this]
+        {
+            if (GameObject* console = Console())
+                console->SetGoState(GO_STATE_READY);
+        });
+
+        Beat(BEAT_CONSOLE_RELEASED, [this] { ReleaseConsole(); });
+
         Beat(BEAT_TOCK_SAY_GOGGLES,     [this] { Talk(SAY_TOCK_GOGGLES); });
         Beat(BEAT_TOCK_STOPS_WORKING_2, [this] { me->SetUInt32Value(UNIT_NPC_EMOTESTATE, EMOTE_STATE_NO_EMOTE); });
         Beat(BEAT_TOCK_SAY_AMAZING,     [this] { Talk(SAY_TOCK_AMAZING); });
@@ -4558,9 +4597,12 @@ private:
     {
         Beat(BEAT_HELM_APPEARS, [this]
         {
-            me->SummonGameObject(GO_RECOVERED_HELM, RecoveredHelmMark, RecoveredHelmRotation,
-                RECOVERED_HELM_DURATION);
+            if (GameObject* helm = me->SummonGameObject(GO_RECOVERED_HELM, RecoveredHelmMark, RecoveredHelmRotation, 0))
+                _helm = helm->GetGUID();
         });
+
+        // Gone in the same instant the console shuts.
+        Beat(BEAT_HELM_GONE, [this] { ClearHelm(); });
 
         Beat(BEAT_APPARATUS_APPEARS, [this]
         {
@@ -4662,6 +4704,32 @@ private:
         return ObjectAccessor::GetCreature(*me, _gnome);
     }
 
+    GameObject* Console()
+    {
+        if (_console.IsEmpty())
+            return nullptr;
+        return ObjectAccessor::GetGameObject(*me, _console);
+    }
+
+    // Shut and released. Safe to call on a console that was never opened.
+    void ReleaseConsole()
+    {
+        if (GameObject* console = Console())
+        {
+            console->RemoveFlag(GAMEOBJECT_FLAGS, GO_FLAG_IN_USE);
+            console->SetGoState(GO_STATE_READY);
+        }
+        _console.Clear();
+    }
+
+    void ClearHelm()
+    {
+        if (!_helm.IsEmpty())
+            if (GameObject* helm = ObjectAccessor::GetGameObject(*me, _helm))
+                helm->Delete();
+        _helm.Clear();
+    }
+
     template<typename Action>
     void Beat(uint32 offsetMs, Action&& action)
     {
@@ -4669,6 +4737,8 @@ private:
     }
 
     ObjectGuid _gnome;
+    ObjectGuid _helm;
+    ObjectGuid _console;
     bool _running = false;
     TaskScheduler _scheduler;
 };

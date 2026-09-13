@@ -31,6 +31,7 @@
 #include "Player.h"
 #include "QuestDef.h"
 #include "ScriptedCreature.h"
+#include "ScriptedGossip.h"
 #include "SpellInfo.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
@@ -4660,6 +4661,802 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum CrushcogAssault
+{
+    NPC_MOUNTAINEER_STONEGRIND          = 42852,
+    NPC_RAZLO_CRUSHCOG_MECH             = 42839,
+    NPC_RAZLO_CRUSHCOG_RIDER            = 42494,
+    NPC_CRUSHCOGS_GUARDIAN              = 42294,
+    NPC_CRUSHCOG_DEFEATED_CREDIT        = 42860,
+
+    MENU_MEKKATORQUE_ASSAULT            = 11662,
+
+    MUSIC_ASSAULT_BRIEFING              = 23952,
+    MUSIC_ASSAULT_BATTLE                = 23798,
+
+    // What the two of them fight with. The Bomb is the one cast with a bar on it.
+    SPELL_SUPER_SHRINK_RAY              = 22742,
+    SPELL_BOMB                          = 9143,
+    SPELL_GOBLIN_DRAGON_GUN             = 22739,
+    SPELL_STONEGRIND_SHOOT              = 80173,
+    SPELL_MACHINE_GUN                   = 74438,
+
+    // The idle pose the guardians hold until they are called up.
+    SPELL_GUARDIAN_FREEZE_ANIM          = 16245,
+
+    SAY_MEKKATORQUE_THERMAPLUGG         = 0,
+    SAY_MEKKATORQUE_THWARTED            = 1,
+    SAY_MEKKATORQUE_SEND_HIM            = 2,
+    SAY_MEKKATORQUE_VICTORIOUS          = 3,
+    SAY_MEKKATORQUE_YOURE_NEXT          = 4,
+    SAY_STONEGRIND_AYE                  = 0,
+    SAY_STONEGRIND_TEACH                = 1,
+    SAY_CRUSHCOG_ESCAPE                 = 0,
+    SAY_CRUSHCOG_GUARDIANS              = 1,
+    SAY_CRUSHCOG_TRUE_SONS              = 2,
+
+    POINT_MEKKATORQUE_MARK              = 2,
+    POINT_MEKKATORQUE_RETURN            = 3,
+    POINT_STONEGRIND_MARK               = 4,
+    POINT_STONEGRIND_RETURN             = 5,
+    POINT_GUARDIAN_GATHER               = 6,
+    POINT_MEKKATORQUE_GUN_MARK          = 7,
+
+    ACTION_WAKE                         = 1,
+    ACTION_JOIN_FIGHT                   = 2,
+    ACTION_STAND_DOWN                   = 3
+};
+
+// The two of them ride out of Mekkatorque's camp, through the stream and up the far
+// bank to the edge of Crushcog's ground. Element 0 of each route is the point the
+// rider is standing on when the leg goes out, never a destination: MoveSplineInit::Launch
+// overwrites it with the mover's real position. Both cross at 3.74 yd/s -- neither the
+// entry's walk nor its run -- so the walk rate is raised for the crossing and put back
+// on arrival.
+static constexpr float ASSAULT_CROSSING_SPEED   = 3.74f;
+static constexpr float ASSAULT_BASE_WALK_SPEED  = 2.5f;
+
+// ...and run back to the marks at the evade rate once the fight is over.
+static constexpr float ASSAULT_RETURN_RATE      = 1.25f;
+
+Position const MekkatorqueCrossing[] =
+{
+    { -5313.4930f, 148.3941f, 389.5100f },
+    { -5303.0312f, 140.4922f, 389.3614f },
+    { -5300.7812f, 138.7422f, 388.6114f },
+    { -5299.2812f, 137.4922f, 387.8614f },
+    { -5297.7812f, 136.2422f, 386.6114f },
+    { -5295.1190f, 134.0730f, 386.1639f },
+    { -5292.5693f, 132.0903f, 386.2130f },
+    { -5290.8613f, 131.0508f, 387.1309f },
+    { -5287.4473f, 128.9727f, 388.7411f },
+    { -5285.7400f, 127.9336f, 389.1132f },
+    { -5284.3760f, 127.1032f, 389.5718f },
+    { -5283.0490f, 126.3016f, 390.4158f },
+    { -5281.2990f, 125.3016f, 390.9158f },
+    { -5279.2990f, 124.5516f, 391.4158f },
+    { -5277.2990f, 123.8016f, 391.6658f },
+    { -5275.2990f, 123.3016f, 392.1658f },
+    { -5273.5490f, 123.0516f, 392.6658f },
+    { -5271.7990f, 122.5516f, 393.1658f },
+    { -5269.7990f, 122.0516f, 393.1658f },
+    { -5268.0490f, 121.5516f, 393.6658f },
+    { -5266.0490f, 121.0516f, 393.9158f },
+    { -5261.7220f, 119.5000f, 393.7598f }
+};
+
+Position const StonegrindCrossing[] =
+{
+    { -5311.1216f, 150.9410f, 390.0118f },
+    { -5303.5435f, 145.8733f, 389.8128f },
+    { -5301.0435f, 144.1233f, 389.5628f },
+    { -5299.5435f, 143.1233f, 389.0628f },
+    { -5297.2935f, 141.3733f, 387.5628f },
+    { -5295.5435f, 140.3733f, 386.5628f },
+    { -5291.9740f, 137.5675f, 386.1139f },
+    { -5289.1865f, 135.7056f, 386.6199f },
+    { -5287.4365f, 134.7056f, 387.3699f },
+    { -5284.9365f, 133.4556f, 388.6199f },
+    { -5282.4365f, 132.2056f, 389.3699f },
+    { -5281.0024f, 131.0717f, 389.9424f },
+    { -5279.6780f, 130.3735f, 390.9056f },
+    { -5277.9280f, 129.3735f, 391.6556f },
+    { -5276.6780f, 129.1235f, 391.9056f },
+    { -5273.9280f, 128.1235f, 392.1556f },
+    { -5271.9280f, 127.6235f, 392.6556f },
+    { -5270.1780f, 127.3735f, 393.1556f },
+    { -5267.4280f, 126.3735f, 393.6556f },
+    { -5265.4280f, 125.8735f, 393.9056f },
+    { -5261.6780f, 124.8735f, 394.1556f },
+    { -5260.3540f, 124.1753f, 393.8688f }
+};
+
+// Where they stand to be challenged, and come back to when it is done. Mekkatorque
+// squares up to Crushcog on arrival; Stonegrind turns when the fight begins and again
+// when he is back.
+Position const MekkatorqueAssaultMark = { -5261.7220f, 119.5000f, 393.7598f, 6.161012f };
+Position const StonegrindAssaultMark  = { -5260.3540f, 124.1753f, 393.8688f, 6.005911f };
+static constexpr float STONEGRIND_FIGHT_FACING = 6.256126f;
+
+// Mekkatorque fires the Dragon Gun from beside the mech, facing straight into it, and
+// drops the Bomb on the ground east of it first. The bomb has a minimum range, so its
+// mark sits past the last guardian's spot rather than on it.
+Position const MekkatorqueGunMark = { -5243.2540f, 121.1524f, 394.2717f, 3.497797f };
+Position const MekkatorqueBombMark = { -5236.891f, 122.482f, 394.0f };
+static constexpr float MEKKATORQUE_BOMB_FACING = 0.206092f;
+
+Position const MekkatorqueReturn[] =
+{
+    { -5243.2540f, 121.1524f, 394.2717f },
+    { -5252.2383f, 120.3262f, 394.2658f },
+    { -5253.9883f, 120.3262f, 394.0158f },
+    { -5258.9883f, 120.0762f, 394.0158f },
+    { -5261.7220f, 119.5000f, 393.7598f }
+};
+
+Position const StonegrindReturn[] =
+{
+    { -5243.5396f, 121.0580f, 394.2835f },
+    { -5250.4470f, 122.6167f, 394.3262f },
+    { -5251.4470f, 122.6167f, 394.0762f },
+    { -5260.3540f, 124.1753f, 393.8688f }
+};
+
+// The four guardians close in round the mech before the fight. Each is matched to the
+// point nearest its own spawn.
+Position const GuardianGatherPoints[] =
+{
+    { -5255.2700f, 111.5330f, 393.1738f },
+    { -5252.9746f, 128.3291f, 394.1011f },
+    { -5253.5527f, 115.9414f, 393.8345f },
+    { -5252.0610f, 123.9509f, 393.7387f }
+};
+static constexpr size_t GUARDIAN_COUNT = std::extent<decltype(GuardianGatherPoints)>::value;
+static constexpr float GUARDIAN_SEARCH_RANGE = 40.0f;
+static constexpr float CREDIT_RANGE = 40.0f;
+
+// Every beat, in milliseconds from the moment the player tells Mekkatorque to start.
+static constexpr uint32 BEAT_ASSAULT_MUSIC              = 177;
+static constexpr uint32 BEAT_MEKKATORQUE_SAY_THERMAPLUGG = 1295;
+static constexpr uint32 BEAT_MEKKATORQUE_TALKS_1        = 7364;
+static constexpr uint32 BEAT_MEKKATORQUE_SAY_THWARTED   = 13388;
+static constexpr uint32 BEAT_MEKKATORQUE_TALKS_2        = 19142;
+static constexpr uint32 BEAT_MEKKATORQUE_SAY_SEND_HIM   = 24388;
+static constexpr uint32 BEAT_STONEGRIND_SAY_AYE         = 29246;
+static constexpr uint32 BEAT_MEKKATORQUE_SETS_OFF       = 30456;
+static constexpr uint32 BEAT_BATTLE_MUSIC               = 47462;
+static constexpr uint32 BEAT_CRUSHCOG_SAY_ESCAPE        = 49086;
+static constexpr uint32 BEAT_CRUSHCOG_SAY_GUARDIANS     = 55096;
+static constexpr uint32 BEAT_GUARDIANS_WAKE             = 62045;
+static constexpr uint32 BEAT_GUARDIANS_GATHER           = 63269;
+static constexpr uint32 BEAT_GUARDIANS_SELECTABLE       = 66931;
+static constexpr uint32 BEAT_FIGHT_STARTS               = 70958;
+static constexpr uint32 BEAT_MECH_ENGAGES               = 77036;
+static constexpr uint32 BEAT_MEKKATORQUE_BOMB           = 79459;
+static constexpr uint32 BEAT_MEKKATORQUE_DRAGON_GUN     = 81871;
+static constexpr uint32 BEAT_MECH_DIES                  = 82898;
+static constexpr uint32 BEAT_STONEGRIND_RETURNS         = 83495;
+static constexpr uint32 BEAT_STONEGRIND_SAY_TEACH       = 86726;
+static constexpr uint32 BEAT_MEKKATORQUE_RETURNS        = 90308;
+static constexpr uint32 BEAT_MEKKATORQUE_SAY_VICTORIOUS = 92808;
+static constexpr uint32 BEAT_STONEGRIND_LEAVES          = 97601;
+static constexpr uint32 BEAT_CRUSHCOG_CREDIT            = 98870;
+static constexpr uint32 BEAT_MEKKATORQUE_TALKS_3        = 103728;
+static constexpr uint32 BEAT_MEKKATORQUE_LEAVES         = 109819;
+
+// The guardians wake and set off one after another, not as one.
+static constexpr uint32 GUARDIAN_STAGGER_MS             = 410;
+
+// Everyone is back about thirty seconds after Mekkatorque goes; the others left
+// earlier, so they wait longer. The guardians come back on their own clock, thirty
+// seconds after their bodies are cleared.
+static constexpr Seconds MEKKATORQUE_RESPAWN            = Seconds(30);
+static constexpr Seconds STONEGRIND_RESPAWN             = Seconds(42);
+static constexpr Seconds MECH_RESPAWN                   = Seconds(53);
+static constexpr Seconds GUARDIAN_RESPAWN               = Seconds(30);
+static constexpr uint32 MECH_CORPSE_MS                  = 3800;
+static constexpr uint32 GUARDIAN_CORPSE_MS              = 2500;
+
+// Crushcog is thrown clear when the mech dies, lands, and is dead a moment later.
+static constexpr uint32 RIDER_DEATH_MS                  = 1400;
+
+// Neither of the two can be killed. They fight at the level they are and the mech
+// would get nowhere near it, but a guardian's swing or a bystander's mistake must not
+// leave the player without a quest giver.
+static void ClampToSurvive(Creature* creature, uint32& damage)
+{
+    if (damage >= creature->GetHealth())
+        damage = creature->GetHealth() - 1;
+}
+
+// A guardian that is still in the fight, nearest to the caller. Ones that have
+// already respawned stand immune and are not it.
+static Creature* NearestFightingGuardian(Creature* from)
+{
+    std::list<Creature*> guardians;
+    from->GetCreatureListWithEntryInGrid(guardians, NPC_CRUSHCOGS_GUARDIAN, GUARDIAN_SEARCH_RANGE);
+
+    Creature* nearest = nullptr;
+    for (Creature* guardian : guardians)
+    {
+        if (!guardian->IsAlive() || guardian->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
+            continue;
+        if (!nearest || from->GetDistance(guardian) < from->GetDistance(nearest))
+            nearest = guardian;
+    }
+    return nearest;
+}
+
+// Melee for a creature that is in a scripted fight: hit whoever it has, pick the next
+// guardian when that one drops, and never evade -- leaving is the owner's decision.
+static void FightGuardians(Creature* fighter)
+{
+    if (!fighter->GetVictim())
+    {
+        Creature* next = NearestFightingGuardian(fighter);
+        if (!next)
+            return;
+        fighter->AI()->AttackStart(next);
+    }
+    fighter->AI()->DoMeleeAttackIfReady();
+}
+
+// High Tinker Mekkatorque, standing at the front of his camp on the near side of the
+// stream. Tell him you are ready and he explains the assault, rides across with
+// Mountaineer Stonegrind to the edge of Crushcog's ground, is challenged, and fights:
+// the four guardians are called up, the mech opens fire, Mekkatorque shrinks it, bombs
+// the ground and burns it down with the Dragon Gun. Crushcog is thrown from the wreck,
+// both ride back, the player is credited, and everyone leaves to reset half a minute
+// later.
+//
+// Not SmartAI. Six creatures act, four of them routed by written-out node lists, a
+// vehicle dies on cue with its rider handled separately, and the credit goes to every
+// player in range rather than the one who spoke; a SMART_ACTION reaches none of that.
+//
+// The clock is fixed from the gossip choice. The one thing in it that is not is the
+// fight itself, which is real: the guardians and the mech lose their immunities and
+// are killed by whoever kills them. The beats that end the fight are backstopped, so a
+// guardian nobody reached or a mech nobody finished still dies on time.
+struct npc_high_tinker_mekkatorque_assault : public ScriptedAI
+{
+    npc_high_tinker_mekkatorque_assault(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        _running = false;
+        _fighting = false;
+        _player.Clear();
+        _stonegrind.Clear();
+        _mech.Clear();
+        _guardians.clear();
+
+        // He does not pick fights with the sentry-bots that wander past his camp.
+        me->SetReactState(REACT_PASSIVE);
+        me->SetWalk(false);
+        RestoreSpeeds(me);
+    }
+
+    void sGossipSelect(Player* player, uint32 menuId, uint32 /*gossipListId*/) override
+    {
+        if (menuId != MENU_MEKKATORQUE_ASSAULT)
+            return;
+
+        CloseGossipMenuFor(player);
+
+        // A second player asking while the first run is under way is ignored rather than
+        // queued. They keep the talk-to credit they were just given and, if they follow
+        // along, the kill credit too.
+        if (_running)
+            return;
+
+        StartAssault(player);
+    }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+    {
+        ClampToSurvive(me, damage);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != EFFECT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_MEKKATORQUE_MARK || id == POINT_MEKKATORQUE_RETURN)
+        {
+            RestoreSpeeds(me);
+            me->SetFacingTo(MekkatorqueAssaultMark.GetOrientation());
+        }
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+
+        if (_fighting)
+            FightGuardians(me);
+    }
+
+private:
+
+    void StartAssault(Player* player)
+    {
+        Creature* stonegrind = me->FindNearestCreature(NPC_MOUNTAINEER_STONEGRIND, GUARDIAN_SEARCH_RANGE);
+        Creature* mech = me->FindNearestCreature(NPC_RAZLO_CRUSHCOG_MECH, 100.0f);
+        if (!stonegrind || !mech)
+        {
+            // Nothing logs a missing spawn, so this does. Without either of them the
+            // run has nobody to fight or nobody to fight with.
+            TC_LOG_ERROR("scripts.ai", "npc_high_tinker_mekkatorque_assault: %s%s missing, the assault cannot start",
+                stonegrind ? "" : "Mountaineer Stonegrind ", mech ? "" : "Razlo Crushcog's mech ");
+            return;
+        }
+
+        _running = true;
+        _player = player->GetGUID();
+        _stonegrind = stonegrind->GetGUID();
+        _mech = mech->GetGUID();
+        GatherGuardians(mech);
+
+        ScheduleBriefing();
+        ScheduleCrossing();
+        ScheduleChallenge();
+        ScheduleFight();
+        ScheduleVictory();
+    }
+
+    // The four guardians, each paired with the gathering point nearest its spawn.
+    void GatherGuardians(Creature* mech)
+    {
+        _guardians.clear();
+
+        std::list<Creature*> guardians;
+        mech->GetCreatureListWithEntryInGrid(guardians, NPC_CRUSHCOGS_GUARDIAN, GUARDIAN_SEARCH_RANGE);
+
+        for (Creature* guardian : guardians)
+        {
+            if (!guardian->IsAlive())
+                continue;
+
+            Position home = guardian->GetHomePosition();
+            size_t best = 0;
+            for (size_t i = 1; i < GUARDIAN_COUNT; ++i)
+                if (home.GetExactDist2d(&GuardianGatherPoints[i]) < home.GetExactDist2d(&GuardianGatherPoints[best]))
+                    best = i;
+
+            _guardians.push_back({ guardian->GetGUID(), best });
+        }
+
+        if (_guardians.size() != GUARDIAN_COUNT)
+            TC_LOG_ERROR("scripts.ai", "npc_high_tinker_mekkatorque_assault: %u of %u guardians found round the mech",
+                uint32(_guardians.size()), uint32(GUARDIAN_COUNT));
+    }
+
+    void ScheduleBriefing()
+    {
+        Beat(BEAT_ASSAULT_MUSIC,               [this] { me->PlayDirectMusic(MUSIC_ASSAULT_BRIEFING); });
+        Beat(BEAT_MEKKATORQUE_SAY_THERMAPLUGG, [this] { Talk(SAY_MEKKATORQUE_THERMAPLUGG, Leader()); });
+        Beat(BEAT_MEKKATORQUE_TALKS_1,         [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_MEKKATORQUE_SAY_THWARTED,    [this] { Talk(SAY_MEKKATORQUE_THWARTED, Leader()); });
+        Beat(BEAT_MEKKATORQUE_TALKS_2,         [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_TALK); });
+        Beat(BEAT_MEKKATORQUE_SAY_SEND_HIM,    [this] { Talk(SAY_MEKKATORQUE_SEND_HIM, Leader()); });
+    }
+
+    void ScheduleCrossing()
+    {
+        Beat(BEAT_STONEGRIND_SAY_AYE, [this]
+        {
+            Creature* stonegrind = Stonegrind();
+            if (!stonegrind)
+                return;
+
+            stonegrind->AI()->Talk(SAY_STONEGRIND_AYE);
+            Cross(stonegrind, POINT_STONEGRIND_MARK, StonegrindCrossing, std::extent<decltype(StonegrindCrossing)>::value);
+        });
+
+        Beat(BEAT_MEKKATORQUE_SETS_OFF, [this]
+        {
+            Cross(me, POINT_MEKKATORQUE_MARK, MekkatorqueCrossing, std::extent<decltype(MekkatorqueCrossing)>::value);
+        });
+
+        Beat(BEAT_BATTLE_MUSIC, [this] { me->PlayDirectMusic(MUSIC_ASSAULT_BATTLE); });
+    }
+
+    void ScheduleChallenge()
+    {
+        Beat(BEAT_CRUSHCOG_SAY_ESCAPE, [this]
+        {
+            if (Creature* mech = Mech())
+                mech->AI()->Talk(SAY_CRUSHCOG_ESCAPE, Leader());
+        });
+
+        Beat(BEAT_CRUSHCOG_SAY_GUARDIANS, [this]
+        {
+            if (Creature* mech = Mech())
+                mech->AI()->Talk(SAY_CRUSHCOG_GUARDIANS);
+        });
+
+        for (size_t i = 0; i < _guardians.size(); ++i)
+        {
+            uint32 stagger = uint32(i) * GUARDIAN_STAGGER_MS;
+
+            Beat(BEAT_GUARDIANS_WAKE + stagger, [this, i]
+            {
+                if (Creature* guardian = Guardian(i))
+                    guardian->AI()->DoAction(ACTION_WAKE);
+            });
+
+            Beat(BEAT_GUARDIANS_GATHER + stagger, [this, i]
+            {
+                if (Creature* guardian = Guardian(i))
+                    guardian->GetMotionMaster()->MovePoint(POINT_GUARDIAN_GATHER, GuardianGatherPoints[_guardians[i].point]);
+            });
+
+            Beat(BEAT_GUARDIANS_SELECTABLE + stagger, [this, i]
+            {
+                if (Creature* guardian = Guardian(i))
+                    guardian->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE);
+            });
+        }
+    }
+
+    void ScheduleFight()
+    {
+        Beat(BEAT_FIGHT_STARTS, [this]
+        {
+            Creature* mech = Mech();
+            Creature* stonegrind = Stonegrind();
+            if (mech)
+                mech->AI()->Talk(SAY_CRUSHCOG_TRUE_SONS);
+
+            _fighting = true;
+            me->SetWalk(false);
+
+            if (stonegrind)
+            {
+                stonegrind->SetWalk(false);
+                stonegrind->SetFacingTo(STONEGRIND_FIGHT_FACING);
+                stonegrind->AI()->DoAction(ACTION_JOIN_FIGHT);
+            }
+
+            // The guardians nearer Mekkatorque go for him, the rest for Stonegrind.
+            // Stonegrind opens on the farther of his: the shot has a minimum range
+            // that the near one can sit inside.
+            Creature* shot = nullptr;
+            for (GuardianSlot const& slot : _guardians)
+            {
+                Creature* guardian = ObjectAccessor::GetCreature(*me, slot.guid);
+                if (!guardian || !guardian->IsAlive())
+                    continue;
+
+                guardian->AI()->DoAction(ACTION_JOIN_FIGHT);
+
+                Creature* target = me;
+                if (stonegrind && guardian->GetDistance(stonegrind) < guardian->GetDistance(me))
+                    target = stonegrind;
+                guardian->AI()->AttackStart(target);
+
+                if (target == stonegrind)
+                {
+                    if (!shot || stonegrind->GetDistance(guardian) > stonegrind->GetDistance(shot))
+                        shot = guardian;
+                }
+                else if (!me->GetVictim())
+                    AttackStart(guardian);
+            }
+
+            if (stonegrind && shot)
+            {
+                stonegrind->CastSpell(shot, SPELL_STONEGRIND_SHOOT);
+                stonegrind->AI()->AttackStart(shot);
+            }
+        });
+
+        Beat(BEAT_MECH_ENGAGES, [this]
+        {
+            // Mekkatorque breaks off from the guardians and takes up his firing position;
+            // the mech drops its guard and turns its gun on him.
+            _fighting = false;
+            me->AttackStop();
+            me->GetMotionMaster()->Clear(false);
+            me->GetMotionMaster()->MovePoint(POINT_MEKKATORQUE_GUN_MARK, MekkatorqueGunMark);
+
+            if (Creature* mech = Mech())
+            {
+                mech->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                mech->SetFacingToObject(me);
+                mech->CastSpell(me, SPELL_MACHINE_GUN);
+                me->CastSpell(mech, SPELL_SUPER_SHRINK_RAY);
+            }
+        });
+
+        Beat(BEAT_MEKKATORQUE_BOMB, [this]
+        {
+            me->StopMoving();
+            me->SetFacingTo(MEKKATORQUE_BOMB_FACING);
+            me->CastSpell(MekkatorqueBombMark, SPELL_BOMB, false);
+        });
+
+        Beat(BEAT_MEKKATORQUE_DRAGON_GUN, [this]
+        {
+            me->SetFacingTo(MekkatorqueGunMark.GetOrientation());
+            me->CastSpell(me, SPELL_GOBLIN_DRAGON_GUN);
+        });
+
+        Beat(BEAT_MECH_DIES, [this]
+        {
+            // The first burst of the Dragon Gun is what finishes the mech. Any guardian
+            // still on its feet goes with it, so nothing is left swinging at the marks.
+            if (Creature* mech = Mech())
+                if (mech->IsAlive())
+                    me->Kill(mech);
+
+            for (GuardianSlot const& slot : _guardians)
+                if (Creature* guardian = ObjectAccessor::GetCreature(*me, slot.guid))
+                    if (guardian->IsAlive() && !guardian->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
+                        me->Kill(guardian);
+        });
+    }
+
+    void ScheduleVictory()
+    {
+        Beat(BEAT_STONEGRIND_RETURNS, [this]
+        {
+            if (Creature* stonegrind = Stonegrind())
+            {
+                stonegrind->AI()->DoAction(ACTION_STAND_DOWN);
+                Return(stonegrind, POINT_STONEGRIND_RETURN, StonegrindReturn, std::extent<decltype(StonegrindReturn)>::value);
+            }
+        });
+
+        Beat(BEAT_STONEGRIND_SAY_TEACH, [this]
+        {
+            if (Creature* stonegrind = Stonegrind())
+                stonegrind->AI()->Talk(SAY_STONEGRIND_TEACH);
+        });
+
+        Beat(BEAT_MEKKATORQUE_RETURNS, [this]
+        {
+            me->InterruptNonMeleeSpells(false);
+            me->CombatStop(true);
+            Return(me, POINT_MEKKATORQUE_RETURN, MekkatorqueReturn, std::extent<decltype(MekkatorqueReturn)>::value);
+        });
+
+        Beat(BEAT_MEKKATORQUE_SAY_VICTORIOUS, [this] { Talk(SAY_MEKKATORQUE_VICTORIOUS); });
+
+        Beat(BEAT_STONEGRIND_LEAVES, [this]
+        {
+            if (Creature* stonegrind = Stonegrind())
+                stonegrind->DespawnOrUnsummon(Milliseconds(1), STONEGRIND_RESPAWN);
+        });
+
+        Beat(BEAT_CRUSHCOG_CREDIT, [this]
+        {
+            CreditPlayers();
+            Talk(SAY_MEKKATORQUE_YOURE_NEXT, Leader());
+        });
+
+        Beat(BEAT_MEKKATORQUE_TALKS_3, [this] { me->HandleEmoteCommand(EMOTE_ONESHOT_TALK); });
+
+        Beat(BEAT_MEKKATORQUE_LEAVES, [this]
+        {
+            _running = false;
+            me->DespawnOrUnsummon(Milliseconds(1), MEKKATORQUE_RESPAWN);
+        });
+    }
+
+    // Everyone in range with the quest open is credited, not only the one who asked.
+    void CreditPlayers()
+    {
+        std::list<Player*> players;
+        me->GetPlayerListInGrid(players, CREDIT_RANGE);
+        for (Player* player : players)
+            if (player->GetQuestStatus(QUEST_DOWN_WITH_CRUSHCOG) == QUEST_STATUS_INCOMPLETE)
+                player->KilledMonsterCredit(NPC_CRUSHCOG_DEFEATED_CREDIT);
+    }
+
+    static void Cross(Creature* rider, uint32 pointId, Position const* route, size_t count)
+    {
+        rider->SetSpeedRate(MOVE_WALK, ASSAULT_CROSSING_SPEED / ASSAULT_BASE_WALK_SPEED);
+        WalkRoute(rider, pointId, route, count);
+    }
+
+    static void Return(Creature* rider, uint32 pointId, Position const* route, size_t count)
+    {
+        rider->GetMotionMaster()->Clear(false);
+        rider->SetWalk(false);
+        rider->SetSpeedRate(MOVE_RUN, rider->GetCreatureTemplate()->speed_run * ASSAULT_RETURN_RATE);
+        rider->GetMotionMaster()->MoveSmoothPath(pointId, route, count, false);
+    }
+
+    static void RestoreSpeeds(Creature* rider)
+    {
+        rider->SetSpeedRate(MOVE_WALK, rider->GetCreatureTemplate()->speed_walk);
+        rider->SetSpeedRate(MOVE_RUN, rider->GetCreatureTemplate()->speed_run);
+    }
+
+    struct GuardianSlot
+    {
+        ObjectGuid guid;
+        size_t point;
+    };
+
+    Creature* Guardian(size_t i)
+    {
+        if (i >= _guardians.size())
+            return nullptr;
+        Creature* guardian = ObjectAccessor::GetCreature(*me, _guardians[i].guid);
+        return guardian && guardian->IsAlive() ? guardian : nullptr;
+    }
+
+    Creature* Stonegrind() { return ObjectAccessor::GetCreature(*me, _stonegrind); }
+    Creature* Mech() { return ObjectAccessor::GetCreature(*me, _mech); }
+    Player* Leader() { return ObjectAccessor::GetPlayer(*me, _player); }
+
+    template<typename Action>
+    void Beat(uint32 offsetMs, Action&& action)
+    {
+        _scheduler.Schedule(Milliseconds(offsetMs), [action](TaskContext /*task*/) { action(); });
+    }
+
+    ObjectGuid _player;
+    ObjectGuid _stonegrind;
+    ObjectGuid _mech;
+    std::vector<GuardianSlot> _guardians;
+    bool _running = false;
+    bool _fighting = false;
+    TaskScheduler _scheduler;
+};
+
+// Mountaineer Stonegrind, who rides beside Mekkatorque. Everything he does is called
+// from the High Tinker's clock; this is what has to live on his own hooks -- the melee,
+// the speed put back when a leg ends, and the two facings.
+struct npc_mountaineer_stonegrind : public ScriptedAI
+{
+    npc_mountaineer_stonegrind(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _fighting = false;
+        me->SetReactState(REACT_PASSIVE);
+        me->SetWalk(false);
+        me->SetSpeedRate(MOVE_WALK, me->GetCreatureTemplate()->speed_walk);
+        me->SetSpeedRate(MOVE_RUN, me->GetCreatureTemplate()->speed_run);
+    }
+
+    void DoAction(int32 action) override
+    {
+        if (action == ACTION_JOIN_FIGHT)
+            _fighting = true;
+        else if (action == ACTION_STAND_DOWN)
+        {
+            _fighting = false;
+            me->CombatStop(true);
+        }
+    }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+    {
+        ClampToSurvive(me, damage);
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != EFFECT_MOTION_TYPE)
+            return;
+
+        if (id == POINT_STONEGRIND_MARK)
+            me->SetSpeedRate(MOVE_WALK, me->GetCreatureTemplate()->speed_walk);
+        else if (id == POINT_STONEGRIND_RETURN)
+        {
+            me->SetSpeedRate(MOVE_RUN, me->GetCreatureTemplate()->speed_run);
+            me->SetFacingTo(StonegrindAssaultMark.GetOrientation());
+        }
+    }
+
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        if (_fighting)
+            FightGuardians(me);
+    }
+
+private:
+    bool _fighting = false;
+};
+
+// The mech Crushcog rides. It never moves and never chases: it is spoken through,
+// fires its gun on Mekkatorque's cue, and dies when the Dragon Gun reaches it -- or
+// earlier, if the player gets there first, which is why the rider is handled here and
+// not on the High Tinker's clock. Crushcog is thrown clear as it dies, lands, and is
+// dead a second and a half later; the wreck is cleared shortly after.
+struct npc_razlo_crushcog_mech : public ScriptedAI
+{
+    npc_razlo_crushcog_mech(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
+    {
+        if (apply && passenger->GetEntry() == NPC_RAZLO_CRUSHCOG_RIDER)
+            _rider = passenger->GetGUID();
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        // The rider is already off: the control aura goes with the mech's death and
+        // Unit::_ExitVehicle throws him. He is not a minion of the seat, so he lands
+        // alive and is killed from here.
+        _scheduler.Schedule(Milliseconds(RIDER_DEATH_MS), [this](TaskContext /*task*/)
+        {
+            if (Creature* rider = ObjectAccessor::GetCreature(*me, _rider))
+                if (rider->IsAlive())
+                    rider->KillSelf();
+        });
+
+        me->DespawnOrUnsummon(Milliseconds(MECH_CORPSE_MS), MECH_RESPAWN);
+    }
+
+    void EnterEvadeMode(EvadeReason /*why*/) override { }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    ObjectGuid _rider;
+    TaskScheduler _scheduler;
+};
+
+// Crushcog's Guardians, the four that stand frozen round the mech. They are woken,
+// walked in and sent at the riders from Mekkatorque's clock; what is theirs is the
+// fight itself and what happens to the body. A dead guardian is cleared quickly and
+// is back, frozen and immune again, half a minute later, whether or not the rest of
+// the scene is still going.
+struct npc_crushcogs_guardian : public ScriptedAI
+{
+    npc_crushcogs_guardian(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        me->SetReactState(REACT_PASSIVE);
+    }
+
+    void DoAction(int32 action) override
+    {
+        switch (action)
+        {
+            case ACTION_WAKE:
+                me->RemoveAurasDueToSpell(SPELL_GUARDIAN_FREEZE_ANIM);
+                break;
+            case ACTION_JOIN_FIGHT:
+                me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
+                me->SetReactState(REACT_AGGRESSIVE);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void JustDied(Unit* /*killer*/) override
+    {
+        me->DespawnOrUnsummon(Milliseconds(GUARDIAN_CORPSE_MS), GUARDIAN_RESPAWN);
+    }
+
+    void UpdateAI(uint32 /*diff*/) override
+    {
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+};
+
 enum PaintItBlack
 {
     SPELL_BLIND_SENTRY                  = 79781,
@@ -4818,6 +5615,10 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_explosive_fuse);
     RegisterGameObjectAI(go_frostmane_hold_detonator);
     RegisterCreatureAI(npc_jarvi_shadowstep);
+    RegisterCreatureAI(npc_high_tinker_mekkatorque_assault);
+    RegisterCreatureAI(npc_mountaineer_stonegrind);
+    RegisterCreatureAI(npc_razlo_crushcog_mech);
+    RegisterCreatureAI(npc_crushcogs_guardian);
     RegisterCreatureAI(npc_crushcog_sentry_bot);
     new player_safe_guide_summoner();
 }

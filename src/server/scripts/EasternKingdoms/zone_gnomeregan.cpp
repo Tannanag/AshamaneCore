@@ -29,6 +29,7 @@ EndScriptData */
 #include "ScriptMgr.h"
 #include "ScriptedCreature.h"
 #include "ScriptedGossip.h"
+#include "SpellScript.h"
 #include "Vehicle.h"
 #include "MotionMaster.h"
 #include "TemporarySummon.h"
@@ -519,6 +520,31 @@ private:
     uint32 _searchTimer;
 };
 
+// 79435 - Despawn GS-9x Multibot
+// the reward for 26205 reaches every bot within 60 yards of the hand-in, so only the
+// one that belongs to the player turning in goes. The quest reward casts it from the
+// quest giver at the player, the SmartAI row on Grindspark casts it from the player.
+class spell_despawn_multi_bot : public SpellScript
+{
+    PrepareSpellScript(spell_despawn_multi_bot);
+
+    void HandleScriptEffect(SpellEffIndex /*effIndex*/)
+    {
+        Creature* bot = GetHitCreature();
+        if (!bot)
+            return;
+
+        Unit* player = GetCaster()->IsPlayer() ? GetCaster() : GetExplTargetUnit();
+        if (player && bot->GetOwnerGUID() == player->GetGUID())
+            bot->DespawnOrUnsummon();
+    }
+
+    void Register() override
+    {
+        OnEffectHitTarget += SpellEffectFn(spell_despawn_multi_bot::HandleScriptEffect, EFFECT_0, SPELL_EFFECT_SCRIPT_EFFECT);
+    }
+};
+
 void AddSC_zone_gnomeregan()
 {
     new npc_nevin_twistwrench();
@@ -526,5 +552,6 @@ void AddSC_zone_gnomeregan()
     new npc_sanitron_5000();
     new npc_gnomeregan_torben();
     RegisterCreatureAI(npc_multi_bot);
+    RegisterSpellScript(spell_despawn_multi_bot);
 }
 

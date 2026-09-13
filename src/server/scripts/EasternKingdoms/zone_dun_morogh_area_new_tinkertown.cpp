@@ -2669,27 +2669,34 @@ enum GnomereganRecruitColumn
     POINT_COLUMN_END        = 1
 };
 
-// A run is one recruit's walk from its post to the end of its route, where it is gone.
-// The next leaves a few seconds later. The three routes are 188, 191 and 257 yards, so at
-// walk speed the columns come round every 81, 83 and 109 seconds.
+// A run is one column's walk from its post to the end of its route, where it is gone.
+// The next leaves a few seconds later. The four routes are 188, 191, 257 and 590 yards,
+// so at walk speed the columns come round every 81, 83, 109 and 242 seconds.
 static constexpr Milliseconds COLUMN_BOARD_TO_WALK = Milliseconds(1000);
 
-// How long a post stands empty between one recruit reaching the end of its route and the
+// How long a post stands empty between one column reaching the end of its route and the
 // next setting off. Six seconds is what the cadence works out to, and the spread either side
-// of it is rolled per run: on a fixed gap the three columns keep whatever order they started
-// in for as long as the server is up, and a player standing at the fork sees the same three
-// recruits pass in the same sequence every time. Rolling it lets them drift apart. Widen the
-// pair to make the wobble more obvious -- nothing else depends on these two numbers.
+// of it is rolled per run: on a fixed gap the columns keep whatever order they started in
+// for as long as the server is up, and a player standing at the fork sees the same recruits
+// pass in the same sequence every time. Rolling it lets them drift apart. Widen the pair to
+// make the wobble more obvious -- nothing else depends on these two numbers.
 static constexpr uint32 COLUMN_RESPAWN_MIN_SECONDS = 3;
 static constexpr uint32 COLUMN_RESPAWN_MAX_SECONDS = 9;
 
-// The three routes out of town. Element 0 of each is that route's own start, because
+// A follower that reaches the end of its route is ended by the leader, which arrives
+// within a second of it. If the word never comes -- the leader died on the road, or was
+// despawned under it -- the follower waits this long and goes on its own.
+static constexpr Milliseconds COLUMN_FOLLOWER_END_GRACE = Milliseconds(5000);
+
+// The four routes out of town. Element 0 of each is that route's own start, because
 // MoveSplineInit::Launch overwrites element 0 with the creature's real position -- the
 // value there is never used as a destination, it only records where the path begins, and
 // it is also what ColumnFor matches a recruit against.
 //
 // Two columns take the road south and split near the bottom of it; the third takes the
-// road southwest, out of the zone. None of them comes back.
+// road southwest, out of the zone; the fourth starts at Brewnall and takes the main road
+// the whole length of the town, to where it leaves the zone in the south. None of them
+// comes back.
 Position const RecruitColumnSouthA[] =
 {
     { -5128.630f, 441.328f, 396.082f },
@@ -2733,31 +2740,110 @@ Position const RecruitColumnSouthwest[] =
     { -5364.850f, 310.828f, 394.135f }
 };
 
+Position const RecruitColumnMainRoad[] =
+{
+    { -5410.630f, 299.778f, 394.707f },
+    { -5415.990f, 278.858f, 394.742f },
+    { -5418.090f, 252.740f, 394.702f },
+    { -5433.620f, 231.488f, 395.027f },
+    { -5437.520f, 205.658f, 394.350f },
+    { -5436.800f, 170.816f, 394.300f },
+    { -5432.430f, 148.936f, 394.128f },
+    { -5420.340f, 131.248f, 393.420f },
+    { -5416.510f, 111.759f, 393.355f },
+    { -5410.320f,  86.068f, 393.400f },
+    { -5405.260f,  65.701f, 393.398f },
+    { -5396.660f,  54.063f, 392.535f },
+    { -5387.120f,  38.346f, 391.260f },
+    { -5383.360f,  21.264f, 391.270f },
+    { -5381.950f,   1.465f, 391.030f },
+    { -5383.140f, -23.686f, 391.057f },
+    { -5383.250f, -52.927f, 391.202f },
+    { -5388.390f, -75.290f, 391.574f },
+    { -5401.610f, -91.264f, 393.263f },
+    { -5411.300f, -110.835f, 394.432f },
+    { -5415.790f, -127.125f, 395.712f },
+    { -5417.690f, -155.972f, 397.688f },
+    { -5417.770f, -179.623f, 399.359f },
+    { -5420.230f, -211.684f, 401.337f },
+    { -5421.990f, -239.512f, 401.123f },
+    { -5422.820f, -259.606f, 401.284f },
+    { -5421.050f, -288.405f, 400.560f }
+};
+
+// A follower walks the leader's nodes from a post of its own to an end of its own. The
+// main-road column is three recruits in single file: the two behind start three and a half
+// and seven yards back from the leader's post and stop four and eight yards short of its
+// end, so the file they set off in is the file they arrive in.
+struct RecruitColumnFollower
+{
+    Position start;
+    Position end;
+};
+
+static RecruitColumnFollower const RecruitColumnMainRoadFollowers[] =
+{
+    { { -5408.950f, 302.847f, 394.707f, 4.3982f }, { -5421.301f, -284.413f, 400.644f } },
+    { { -5407.260f, 305.764f, 394.707f, 4.3982f }, { -5421.551f, -280.421f, 400.689f } }
+};
+
 struct RecruitColumn
 {
     Position const* nodes;
     size_t          size;
+    RecruitColumnFollower const* followers;
+    size_t          followerCount;
 };
 
 static RecruitColumn const RecruitColumns[] =
 {
-    { RecruitColumnSouthA,     std::extent<decltype(RecruitColumnSouthA)>::value     },
-    { RecruitColumnSouthB,     std::extent<decltype(RecruitColumnSouthB)>::value     },
-    { RecruitColumnSouthwest,  std::extent<decltype(RecruitColumnSouthwest)>::value  }
+    { RecruitColumnSouthA,    std::extent<decltype(RecruitColumnSouthA)>::value,    nullptr, 0 },
+    { RecruitColumnSouthB,    std::extent<decltype(RecruitColumnSouthB)>::value,    nullptr, 0 },
+    { RecruitColumnSouthwest, std::extent<decltype(RecruitColumnSouthwest)>::value, nullptr, 0 },
+    { RecruitColumnMainRoad,  std::extent<decltype(RecruitColumnMainRoad)>::value,
+      RecruitColumnMainRoadFollowers, std::extent<decltype(RecruitColumnMainRoadFollowers)>::value }
 };
 
-// Which route a recruit walks comes from where it stands rather than from its guid, so
-// moving a spawn in the database moves it onto the matching column and adding a fourth
-// post is a database change with no script change behind it. Five yards is wide enough to
-// survive a spawn nudged off its mark and far narrower than the 12 yards separating the
-// two southern posts.
-static RecruitColumn const* ColumnFor(Position const& home)
+// A recruit's place in a column: which route, and whether it leads it (slot 0) or walks
+// behind the leader (slot 1 and up, indexing followers from 1).
+struct RecruitColumnSlot
 {
-    for (RecruitColumn const& column : RecruitColumns)
-        if (home.GetExactDist2d(&column.nodes[0]) < 5.0f)
-            return &column;
+    RecruitColumn const* column = nullptr;
+    size_t slot = 0;
+};
 
-    return nullptr;
+// Which route a recruit walks, and where in the file, comes from where it stands rather
+// than from its guid, so moving a spawn in the database moves it onto the matching post
+// and adding a post is a database change with no script change behind it. The nearest
+// post wins, and has to be within five yards: wide enough to survive a spawn nudged off
+// its mark, and the nearest-wins rule is what keeps the three main-road posts apart,
+// which are three and a half yards from one another.
+static RecruitColumnSlot ColumnFor(Position const& home)
+{
+    RecruitColumnSlot best;
+    float bestDist = 5.0f;
+
+    for (RecruitColumn const& column : RecruitColumns)
+    {
+        float dist = home.GetExactDist2d(&column.nodes[0]);
+        if (dist < bestDist)
+        {
+            bestDist = dist;
+            best = { &column, 0 };
+        }
+
+        for (size_t i = 0; i < column.followerCount; ++i)
+        {
+            dist = home.GetExactDist2d(&column.followers[i].start);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                best = { &column, i + 1 };
+            }
+        }
+    }
+
+    return best;
 }
 
 // Map::SummonCreature applies visibleBySummonerOnly before AddToMap, and
@@ -2779,17 +2865,25 @@ static void RevealSummon(Creature* summon)
 }
 
 // A Gnomeregan Recruit hauling an ammo cart out of New Tinkertown. It takes on its load at
-// its post, walks one of the three routes above, and despawns where the route ends; the
+// its post, walks one of the four routes above, and despawns where the route ends; the
 // respawn brings the next one and the run starts over.
+//
+// The main-road column is three of them in single file. Only the leader is a spawn: it
+// summons the two behind it at their posts, starts all three off together, and ends the
+// run for all three when it reaches the bottom of the road. The followers run this same AI
+// from creature_template.ScriptName, resolve their place from where they were put, and
+// wait for the leader's word before they move.
 //
 // Not SmartAI, and not a waypoint path either. SMART_ACTION has no way to seat a creature
 // in a vehicle seat, and a creature_addon path would loop -- WaypointMovementGenerator
 // advances (i_currentNode + 1) % size and has no end -- so the recruit would turn round at
-// the bottom of the road and walk its load back into town.
+// the bottom of the road and walk its load back into town. Nor creature_formations for the
+// file: CreatureGroup::LeaderMoveTo is only reached from the point, waypoint and random
+// generators, and MoveSmoothPath goes through none of them.
 struct npc_gnomeregan_recruit_column : public ScriptedAI
 {
     npc_gnomeregan_recruit_column(Creature* creature) : ScriptedAI(creature),
-        _column(ColumnFor(creature->GetHomePosition())) { }
+        _place(ColumnFor(creature->GetHomePosition())) { }
 
     // The road passes the Crushcog line, and a recruit that stops to fight never finishes
     // its run: a victim means ChaseMovementGenerator, which takes MOTION_SLOT_ACTIVE off
@@ -2818,12 +2912,14 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
         ClearVehicleSpellClick(me);
 
         // Reset runs on respawn, and on anything that cuts a run short -- a grid unload, a
-        // .reload. Without this the load from the abandoned run is left behind.
+        // .reload. Without this the load from the abandoned run is left behind, and so are
+        // the followers a leader had out on the road.
         DespawnLoad();
+        DespawnFollowers();
 
-        if (!_column)
+        if (!_place.column)
         {
-            TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: %s is not within five yards of any column start and will not move",
+            TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: %s is not within five yards of any column post and will not move",
                 me->GetGUID().ToString().c_str());
             return;
         }
@@ -2856,6 +2952,15 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
                 BoardVehicle(bunny, cart, SEAT_CART_BUNNY);
             }
         }
+
+        // The followers are put at their posts now, so their own Reset loads them in the
+        // same tick as the leader and the three are ready together. Their home position is
+        // where they were summoned, which is what ColumnFor reads, so they know their place
+        // without being told.
+        if (IsLeader())
+            for (size_t i = 0; i < _place.column->followerCount; ++i)
+                if (TempSummon* follower = me->SummonCreature(me->GetEntry(), _place.column->followers[i].start, TEMPSUMMON_MANUAL_DESPAWN))
+                    _followers.push_back(follower->GetGUID());
 
         _scheduler.Schedule(COLUMN_BOARD_TO_WALK, [this](TaskContext /*task*/)
         {
@@ -2897,11 +3002,16 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
             if (bunny)
                 RevealSummon(bunny);
 
-            // walk true is the whole reason this is MoveSmoothPath and not a chain of
-            // MovePoint calls: PointMovementGenerator::DoInitialize never touches
-            // MoveSplineInit::SetWalk, so a MovePoint always runs, and me->SetWalk does not
-            // change that.
-            me->GetMotionMaster()->MoveSmoothPath(POINT_COLUMN_END, _column->nodes, _column->size, true);
+            // A follower is loaded and waits. The leader sets off and takes the file with
+            // it, in this one tick, so nobody is a step ahead of anyone.
+            if (!IsLeader())
+                return;
+
+            StartRun();
+
+            for (ObjectGuid const& guid : _followers)
+                if (npc_gnomeregan_recruit_column* follower = FollowerAI(guid))
+                    follower->StartRun();
         });
     }
 
@@ -2912,7 +3022,23 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
         if (type != EFFECT_MOTION_TYPE || id != POINT_COLUMN_END)
             return;
 
-        // The load goes first and in this order. Despawning the recruit takes its vehicle
+        if (!IsLeader())
+        {
+            _scheduler.Schedule(COLUMN_FOLLOWER_END_GRACE, [this](TaskContext /*task*/)
+            {
+                EndRun();
+            });
+            return;
+        }
+
+        // The followers go first: they are the leader's summons, and the leader's own
+        // despawn is what the next run hangs off.
+        for (ObjectGuid const& guid : _followers)
+            if (npc_gnomeregan_recruit_column* follower = FollowerAI(guid))
+                follower->EndRun();
+        _followers.clear();
+
+        // The load goes next and in this order. Despawning the recruit takes its vehicle
         // kit down with it, and Vehicle::Uninstall throws each passenger clear along its
         // seat's exit arc on the way.
         DespawnLoad();
@@ -2930,7 +3056,57 @@ struct npc_gnomeregan_recruit_column : public ScriptedAI
         _scheduler.Update(diff);
     }
 
+    // The walk. A follower's path is the leader's with the end swapped for its own, so the
+    // two behind pull up four and eight yards short rather than onto the leader's heels.
+    // Element 0 is overwritten by Launch either way.
+    //
+    // walk true is the whole reason this is MoveSmoothPath and not a chain of MovePoint
+    // calls: PointMovementGenerator::DoInitialize never touches MoveSplineInit::SetWalk,
+    // so a MovePoint always runs, and me->SetWalk does not change that.
+    void StartRun()
+    {
+        if (!_place.column)
+            return;
+
+        if (IsLeader())
+        {
+            me->GetMotionMaster()->MoveSmoothPath(POINT_COLUMN_END, _place.column->nodes, _place.column->size, true);
+            return;
+        }
+
+        std::vector<Position> path(_place.column->nodes, _place.column->nodes + _place.column->size);
+        path.back() = _place.column->followers[_place.slot - 1].end;
+        me->GetMotionMaster()->MoveSmoothPath(POINT_COLUMN_END, path.data(), path.size(), true);
+    }
+
+    // A follower's run is over: load off, then gone. Followers are summons, so there is
+    // no respawn to time -- the next leader brings its own.
+    void EndRun()
+    {
+        _scheduler.CancelAll();
+        DespawnLoad();
+        me->DespawnOrUnsummon();
+    }
+
 private:
+    bool IsLeader() const { return _place.slot == 0; }
+
+    npc_gnomeregan_recruit_column* FollowerAI(ObjectGuid const& guid) const
+    {
+        Creature* follower = ObjectAccessor::GetCreature(*me, guid);
+        if (!follower)
+            return nullptr;
+
+        // The summon takes this AI from creature_template.ScriptName. Anything else here
+        // means the template row lost it, which is worth a line in the log rather than an
+        // assert that takes the server down over a recruit.
+        npc_gnomeregan_recruit_column* ai = dynamic_cast<npc_gnomeregan_recruit_column*>(follower->AI());
+        if (!ai)
+            TC_LOG_ERROR("scripts.ai", "npc_gnomeregan_recruit_column: follower %s is not running this AI; creature_template.ScriptName for %u is missing",
+                follower->GetGUID().ToString().c_str(), follower->GetEntry());
+        return ai;
+    }
+
     // TRIGGERED_FULL_MASK, rather than Unit::EnterVehicle. EnterVehicle casts 46598 with
     // only TRIGGERED_IGNORE_CASTER_MOUNTED_OR_ON_VEHICLE set, which leaves the whole of
     // Spell::CheckCast in the way of a cast that has no business failing -- and when it
@@ -2949,6 +3125,14 @@ private:
         DespawnSummon(_cart);
     }
 
+    void DespawnFollowers()
+    {
+        for (ObjectGuid const& guid : _followers)
+            if (npc_gnomeregan_recruit_column* follower = FollowerAI(guid))
+                follower->EndRun();
+        _followers.clear();
+    }
+
     void DespawnSummon(ObjectGuid& guid)
     {
         if (Creature* summon = ObjectAccessor::GetCreature(*me, guid))
@@ -2964,9 +3148,10 @@ private:
         guid.Clear();
     }
 
-    RecruitColumn const* _column;
+    RecruitColumnSlot _place;
     ObjectGuid _cart;
     ObjectGuid _bunny;
+    std::vector<ObjectGuid> _followers;
     TaskScheduler _scheduler;
 };
 

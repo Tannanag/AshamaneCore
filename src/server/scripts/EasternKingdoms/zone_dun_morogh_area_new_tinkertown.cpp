@@ -3155,6 +3155,246 @@ private:
     TaskScheduler _scheduler;
 };
 
+enum GnomeTravelerColumn
+{
+    POINT_TRAVELER_END      = 1
+};
+
+// Travelers ride the road at this pace, whatever they sit on and whether they sit on
+// anything at all: not the template's walk and not its run, so it is set on the unit
+// directly and the spline takes it from there.
+static constexpr float TRAVELER_WALK_SPEED = 3.75f;
+
+// A group stands at its start for a moment before it sets off, and the next one appears a
+// few seconds after the last has gone: 650 yards at this pace is about three minutes, and
+// the gap on top of it is rolled per run for the same reason the recruits' is.
+static constexpr Milliseconds TRAVELER_SPAWN_TO_WALK = Milliseconds(2500);
+static constexpr uint32 TRAVELER_RESPAWN_MIN_SECONDS = 5;
+static constexpr uint32 TRAVELER_RESPAWN_MAX_SECONDS = 12;
+static constexpr Milliseconds TRAVELER_FOLLOWER_END_GRACE = Milliseconds(5000);
+
+// How many ride together. Singles and pairs are about as common as each other, and a
+// three is the rarer sight.
+static constexpr uint32 TRAVELER_PAIR_CHANCE = 40;
+static constexpr uint32 TRAVELER_TRIO_CHANCE = 20;
+
+// What a traveler rides, rolled per rider and per run. 0 is on foot, and comes up about
+// as often as any one mount.
+static uint32 const TravelerMounts[] = { 0, 6569, 9473, 9476, 10661 };
+
+// The one route, south to north the whole length of the town: from the road into the zone
+// below the Mountaineer post to the bend past Brewnall, where the group is gone. Element 0
+// is the leader's start, overwritten by Launch like the recruits' is.
+Position const GnomeTravelerRoad[] =
+{
+    { -5423.670f, -329.405f, 399.664f },
+    { -5426.040f, -307.293f, 400.132f },
+    { -5429.140f, -276.083f, 401.011f },
+    { -5429.640f, -240.182f, 401.088f },
+    { -5426.900f, -200.998f, 400.971f },
+    { -5424.780f, -156.597f, 397.878f },
+    { -5423.330f, -121.398f, 396.117f },
+    { -5410.590f,  -87.943f, 393.051f },
+    { -5394.090f,  -72.300f, 391.275f },
+    { -5392.600f,  -37.582f, 391.104f },
+    { -5388.440f,   -8.854f, 391.029f },
+    { -5394.390f,   32.490f, 391.071f },
+    { -5408.300f,   54.634f, 393.804f },
+    { -5421.690f,   95.649f, 393.429f },
+    { -5428.660f,  128.141f, 393.574f },
+    { -5442.210f,  150.464f, 394.589f },
+    { -5446.250f,  179.250f, 394.272f },
+    { -5445.430f,  227.908f, 394.761f },
+    { -5427.860f,  252.457f, 394.702f },
+    { -5425.010f,  276.201f, 394.700f },
+    { -5418.220f,  303.318f, 394.622f },
+    { -5397.710f,  313.358f, 394.584f },
+    { -5382.190f,  319.306f, 394.223f }
+};
+
+// The file behind the leader, same shape as the recruits': posts three and six yards
+// back along the road, ends four and eight yards short of the leader's.
+static RecruitColumnFollower const GnomeTravelerFollowers[] =
+{
+    { { -5423.570f, -332.259f, 399.613f, 1.5359f }, { -5385.923f, 317.869f, 394.416f } },
+    { { -5423.470f, -335.113f, 399.562f, 1.5359f }, { -5389.660f, 316.443f, 394.420f } }
+};
+
+// A traveler's place in the file: slot 0 is the leader's post, slot n the n-th
+// follower's. Same nearest-post rule as the recruits, for the same reason.
+struct TravelerSlot
+{
+    bool   placed = false;
+    size_t slot = 0;
+};
+
+static TravelerSlot TravelerSlotFor(Position const& home)
+{
+    TravelerSlot best;
+    float bestDist = 5.0f;
+
+    float dist = home.GetExactDist2d(&GnomeTravelerRoad[0]);
+    if (dist < bestDist)
+    {
+        bestDist = dist;
+        best = { true, 0 };
+    }
+
+    for (size_t i = 0; i < std::extent<decltype(GnomeTravelerFollowers)>::value; ++i)
+    {
+        dist = home.GetExactDist2d(&GnomeTravelerFollowers[i].start);
+        if (dist < bestDist)
+        {
+            bestDist = dist;
+            best = { true, i + 1 };
+        }
+    }
+
+    return best;
+}
+
+// Gnome Travelers riding up through New Tinkertown. A group of one, two or three appears
+// at the south end of the road, rides the length of the town in single file and is gone at
+// the north end; the leader's respawn brings the next group a few seconds later.
+//
+// The leader is the one spawn. It rolls how many ride with it and summons them at their
+// posts behind it; they run this same AI from creature_template.ScriptName and wait for
+// its word. Every rider rolls its own mount from the pool, and the costume aura on the
+// template addon gives each a face of its own, so no two groups look alike. One-way and
+// summon-led for the reasons the recruits are: a waypoint path loops, and formations do
+// not follow a MoveSmoothPath.
+struct npc_gnome_traveler_column : public ScriptedAI
+{
+    npc_gnome_traveler_column(Creature* creature) : ScriptedAI(creature),
+        _place(TravelerSlotFor(creature->GetHomePosition())) { }
+
+    // Unattackable by flag, but the override keeps a forced target from ever putting a
+    // chase under the ride, for the same reason as the recruits.
+    void AttackStart(Unit* /*who*/) override { }
+    void MoveInLineOfSight(Unit* /*who*/) override { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+
+        me->SetReactState(REACT_PASSIVE);
+
+        // Reset runs on anything that cuts a run short as well as on respawn; a leader's
+        // followers from the abandoned run go with it.
+        DespawnFollowers();
+
+        if (!_place.placed)
+        {
+            TC_LOG_ERROR("scripts.ai", "npc_gnome_traveler_column: %s is not within five yards of any traveler post and will not move",
+                me->GetGUID().ToString().c_str());
+            return;
+        }
+
+        // Creature::setDeathState(JUST_RESPAWNED) runs LoadCreaturesAddon before
+        // AI()->Reset(), and the template addon carries mount 0, which Unit::Mount leaves
+        // alone -- so what is set here is what the rider wears for the run.
+        if (uint32 mount = TravelerMounts[urand(0, std::extent<decltype(TravelerMounts)>::value - 1)])
+            me->Mount(mount);
+        else
+            me->Dismount();
+
+        me->SetSpeed(MOVE_WALK, TRAVELER_WALK_SPEED);
+
+        if (IsLeader())
+        {
+            uint32 roll = urand(0, 99);
+            size_t riding = roll < TRAVELER_TRIO_CHANCE ? 2 : roll < TRAVELER_TRIO_CHANCE + TRAVELER_PAIR_CHANCE ? 1 : 0;
+
+            for (size_t i = 0; i < riding; ++i)
+                if (TempSummon* follower = me->SummonCreature(me->GetEntry(), GnomeTravelerFollowers[i].start, TEMPSUMMON_MANUAL_DESPAWN))
+                    _followers.push_back(follower->GetGUID());
+
+            _scheduler.Schedule(TRAVELER_SPAWN_TO_WALK, [this](TaskContext /*task*/)
+            {
+                StartRun();
+
+                for (ObjectGuid const& guid : _followers)
+                    if (npc_gnome_traveler_column* follower = FollowerAI(guid))
+                        follower->StartRun();
+            });
+        }
+    }
+
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != EFFECT_MOTION_TYPE || id != POINT_TRAVELER_END)
+            return;
+
+        if (!IsLeader())
+        {
+            _scheduler.Schedule(TRAVELER_FOLLOWER_END_GRACE, [this](TaskContext /*task*/)
+            {
+                EndRun();
+            });
+            return;
+        }
+
+        DespawnFollowers();
+        me->DespawnOrUnsummon(0, Seconds(urand(TRAVELER_RESPAWN_MIN_SECONDS, TRAVELER_RESPAWN_MAX_SECONDS)));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+    void StartRun()
+    {
+        if (!_place.placed)
+            return;
+
+        size_t size = std::extent<decltype(GnomeTravelerRoad)>::value;
+        if (IsLeader())
+        {
+            me->GetMotionMaster()->MoveSmoothPath(POINT_TRAVELER_END, GnomeTravelerRoad, size, true);
+            return;
+        }
+
+        std::vector<Position> path(GnomeTravelerRoad, GnomeTravelerRoad + size);
+        path.back() = GnomeTravelerFollowers[_place.slot - 1].end;
+        me->GetMotionMaster()->MoveSmoothPath(POINT_TRAVELER_END, path.data(), path.size(), true);
+    }
+
+    void EndRun()
+    {
+        _scheduler.CancelAll();
+        me->DespawnOrUnsummon();
+    }
+
+private:
+    bool IsLeader() const { return _place.slot == 0; }
+
+    npc_gnome_traveler_column* FollowerAI(ObjectGuid const& guid) const
+    {
+        Creature* follower = ObjectAccessor::GetCreature(*me, guid);
+        if (!follower)
+            return nullptr;
+
+        npc_gnome_traveler_column* ai = dynamic_cast<npc_gnome_traveler_column*>(follower->AI());
+        if (!ai)
+            TC_LOG_ERROR("scripts.ai", "npc_gnome_traveler_column: follower %s is not running this AI; creature_template.ScriptName for %u is missing",
+                follower->GetGUID().ToString().c_str(), follower->GetEntry());
+        return ai;
+    }
+
+    void DespawnFollowers()
+    {
+        for (ObjectGuid const& guid : _followers)
+            if (npc_gnome_traveler_column* follower = FollowerAI(guid))
+                follower->EndRun();
+        _followers.clear();
+    }
+
+    TravelerSlot _place;
+    std::vector<ObjectGuid> _followers;
+    TaskScheduler _scheduler;
+};
+
 enum MonkTraining
 {
     NPC_MONK_TRAINEE_TIMEKEEPER     = 63239,
@@ -5791,6 +6031,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_clean_cannon_x2);
     RegisterCreatureAI(npc_safe_guide);
     RegisterCreatureAI(npc_gnomeregan_recruit_column);
+    RegisterCreatureAI(npc_gnome_traveler_column);
     RegisterCreatureAI(npc_xi_monk_trainer);
     RegisterCreatureAI(npc_monk_trainee);
     RegisterCreatureAI(npc_nevin_twistwrench_arrivals);

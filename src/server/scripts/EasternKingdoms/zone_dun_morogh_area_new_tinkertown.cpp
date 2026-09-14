@@ -5506,6 +5506,11 @@ static constexpr float TECHNICIAN_JUMP_SPEED_XY         = 8.0f;
 static constexpr float TECHNICIAN_JUMP_SPEED_Z          = 8.0f;
 static constexpr uint32 TECHNICIAN_JUMP_LANDING_MS      = 1600;
 
+// The DB's own spawntimesecs (300 s) is far longer than the ~70 s it takes for the
+// rest of the scene to reset, so a second assault would find its technicians still
+// gone. Timed instead to be back a little ahead of Mekkatorque's own respawn.
+static constexpr Seconds TECHNICIAN_RESPAWN             = Seconds(78);
+
 // How often the technician recasts its "at work" channel while it waits.
 static constexpr uint32 TECHNICIAN_WORK_INTERVAL_MS     = 10900;
 
@@ -5519,8 +5524,11 @@ static constexpr Seconds GUARDIAN_RESPAWN               = Seconds(30);
 static constexpr uint32 MECH_CORPSE_MS                  = 3800;
 static constexpr uint32 GUARDIAN_CORPSE_MS              = 2500;
 
-// Crushcog is thrown clear when the mech dies, lands, and is dead a moment later.
+// Crushcog is thrown clear when the mech dies, lands, and is dead a moment later. He
+// has to be found while still seated, a beat before the kill -- being thrown clear
+// only moves him a few yards.
 static constexpr uint32 RIDER_DEATH_MS                  = 1400;
+static constexpr float RIDER_SEARCH_RANGE               = 15.0f;
 
 // Neither of the two can be killed, and nor can the mech before its scripted death --
 // real damage from a guardian's swing, a bystander, or the player themselves during
@@ -5591,6 +5599,7 @@ struct npc_high_tinker_mekkatorque_assault : public ScriptedAI
         _player.Clear();
         _stonegrind.Clear();
         _mech.Clear();
+        _rider.Clear();
         _guardians.clear();
 
         // He does not pick fights with the sentry-bots that wander past his camp.
@@ -5860,14 +5869,35 @@ private:
         {
             // The first burst of the Dragon Gun is what finishes the mech. Any guardian
             // still on its feet goes with it, so nothing is left swinging at the marks.
+            //
+            // The rider has to be found here, before the kill: Unit::_ExitVehicle throws
+            // him clear as the mech's death removes the control aura, so by the next beat
+            // he is standing (alive) a few yards off, not seated any more. He cannot be
+            // killed from the mech's own JustDied -- a creature's AI stops ticking the
+            // moment it dies (Creature::Update only calls UpdateAI in the ALIVE case), so
+            // anything the mech's script schedules for after its own death never fires.
             if (Creature* mech = Mech())
+            {
                 if (mech->IsAlive())
+                {
+                    if (Creature* rider = mech->FindNearestCreature(NPC_RAZLO_CRUSHCOG_RIDER, RIDER_SEARCH_RANGE))
+                        _rider = rider->GetGUID();
                     me->Kill(mech);
+                }
+            }
 
             for (GuardianSlot const& slot : _guardians)
                 if (Creature* guardian = ObjectAccessor::GetCreature(*me, slot.guid))
                     if (guardian->IsAlive() && !guardian->HasFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_NPC))
                         me->Kill(guardian);
+        });
+
+        Beat(BEAT_MECH_DIES + RIDER_DEATH_MS, [this]
+        {
+            // Thrown clear, landed alive, and finished off here a moment later.
+            if (Creature* rider = ObjectAccessor::GetCreature(*me, _rider))
+                if (rider->IsAlive())
+                    rider->KillSelf();
         });
     }
 
@@ -5975,6 +6005,7 @@ private:
     ObjectGuid _player;
     ObjectGuid _stonegrind;
     ObjectGuid _mech;
+    ObjectGuid _rider;
     std::vector<GuardianSlot> _guardians;
     bool _running = false;
     bool _fighting = false;
@@ -6037,27 +6068,23 @@ private:
     bool _fighting = false;
 };
 
-// The mech Crushcog rides. It never moves and never chases: it is spoken through,
-// fires its gun on Mekkatorque's cue, and dies when the Dragon Gun reaches it, which
-// is why the rider is handled here and not on the High Tinker's clock. Real damage is
-// clamped the same as Mekkatorque and Stonegrind's -- once it loses its immunity for
-// the ~6 s before that, a guardian's stray swing or the player's own hits must not
-// finish it ahead of the scripted kill. Crushcog is thrown clear as it dies, lands,
-// and is dead a second and a half later; the wreck is cleared shortly after.
+// The mech Crushcog rides. It never moves and never chases: it is spoken through and
+// fires its gun on Mekkatorque's cue. Real damage is clamped the same as Mekkatorque
+// and Stonegrind's -- once it loses its immunity for the ~6 s before the scripted
+// kill, a guardian's stray swing or the player's own hits must not finish it early.
+//
+// Finishing off the thrown rider is not done from here, tempting as that looks: a
+// creature's AI stops ticking the moment it dies (Creature::Update only calls
+// UpdateAI in the ALIVE case, never CORPSE), so anything scheduled from this script's
+// own JustDied for after its own death would never fire. That beat lives on the High
+// Tinker's clock instead, which is still ticking.
 struct npc_razlo_crushcog_mech : public ScriptedAI
 {
     npc_razlo_crushcog_mech(Creature* creature) : ScriptedAI(creature) { }
 
     void Reset() override
     {
-        _scheduler.CancelAll();
         me->SetReactState(REACT_PASSIVE);
-    }
-
-    void PassengerBoarded(Unit* passenger, int8 /*seatId*/, bool apply) override
-    {
-        if (apply && passenger->GetEntry() == NPC_RAZLO_CRUSHCOG_RIDER)
-            _rider = passenger->GetGUID();
     }
 
     void DamageTaken(Unit* /*attacker*/, uint32& damage) override
@@ -6067,29 +6094,12 @@ struct npc_razlo_crushcog_mech : public ScriptedAI
 
     void JustDied(Unit* /*killer*/) override
     {
-        // The rider is already off: the control aura goes with the mech's death and
-        // Unit::_ExitVehicle throws him. He is not a minion of the seat, so he lands
-        // alive and is killed from here.
-        _scheduler.Schedule(Milliseconds(RIDER_DEATH_MS), [this](TaskContext /*task*/)
-        {
-            if (Creature* rider = ObjectAccessor::GetCreature(*me, _rider))
-                if (rider->IsAlive())
-                    rider->KillSelf();
-        });
-
         me->DespawnOrUnsummon(Milliseconds(MECH_CORPSE_MS), MECH_RESPAWN);
     }
 
     void EnterEvadeMode(EvadeReason /*why*/) override { }
 
-    void UpdateAI(uint32 diff) override
-    {
-        _scheduler.Update(diff);
-    }
-
-private:
-    ObjectGuid _rider;
-    TaskScheduler _scheduler;
+    void UpdateAI(uint32 /*diff*/) override { }
 };
 
 // Crushcog's Guardians, the four that stand frozen round the mech. They are woken,
@@ -6164,8 +6174,7 @@ struct npc_crushcog_technician : public ScriptedAI
         if (Creature* guardian = me->FindNearestCreature(NPC_CRUSHCOGS_GUARDIAN, TECHNICIAN_JUMP_RANGE))
             me->GetMotionMaster()->MoveJump(guardian->GetHomePosition(), TECHNICIAN_JUMP_SPEED_XY, TECHNICIAN_JUMP_SPEED_Z);
 
-        // The DB respawn timer brings it back once the encounter itself resets.
-        me->DespawnOrUnsummon(Milliseconds(TECHNICIAN_JUMP_LANDING_MS));
+        me->DespawnOrUnsummon(Milliseconds(TECHNICIAN_JUMP_LANDING_MS), TECHNICIAN_RESPAWN);
     }
 
     void UpdateAI(uint32 diff) override

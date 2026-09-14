@@ -5685,6 +5685,16 @@ private:
         std::list<Creature*> guardians;
         mech->GetCreatureListWithEntryInGrid(guardians, NPC_CRUSHCOGS_GUARDIAN, GUARDIAN_SEARCH_RANGE);
 
+        // Each guardian's technician is claimed here, once, rather than re-searched
+        // live at the jump-in beat: two guardians independently doing "my nearest
+        // technician" at that point can both land on the same one if a third is
+        // missing (still respawning), leaving one guardian's technician stolen and
+        // another's beat with nothing in range at all -- looks like a jump that never
+        // happens, or one that lands on the wrong suit. Claiming up front means a
+        // missing technician just leaves its own guardian's slot empty.
+        std::list<Creature*> technicians;
+        mech->GetCreatureListWithEntryInGrid(technicians, NPC_CRUSHCOG_TECHNICIAN, GUARDIAN_SEARCH_RANGE);
+
         for (Creature* guardian : guardians)
         {
             if (!guardian->IsAlive())
@@ -5696,7 +5706,19 @@ private:
                 if (home.GetExactDist2d(&GuardianGatherPoints[i]) < home.GetExactDist2d(&GuardianGatherPoints[best]))
                     best = i;
 
-            _guardians.push_back({ guardian->GetGUID(), best });
+            ObjectGuid technician;
+            auto nearest = technicians.end();
+            for (auto itr = technicians.begin(); itr != technicians.end(); ++itr)
+                if (nearest == technicians.end() || home.GetExactDist2d(*itr) < home.GetExactDist2d(*nearest))
+                    nearest = itr;
+
+            if (nearest != technicians.end() && home.GetExactDist2d(*nearest) <= TECHNICIAN_JUMP_RANGE)
+            {
+                technician = (*nearest)->GetGUID();
+                technicians.erase(nearest);
+            }
+
+            _guardians.push_back({ guardian->GetGUID(), best, technician });
         }
 
         if (_guardians.size() != GUARDIAN_COUNT)
@@ -5754,11 +5776,15 @@ private:
 
             Beat(BEAT_TECHNICIANS_JUMP_IN + stagger, [this, i]
             {
-                // The technician finds its own guardian rather than the other way
-                // round: each one stands close enough to its own that nothing else
-                // in range is nearer.
-                if (Creature* guardian = Guardian(i))
-                    if (Creature* technician = guardian->FindNearestCreature(NPC_CRUSHCOG_TECHNICIAN, TECHNICIAN_JUMP_RANGE))
+                // The technician was claimed for this guardian back in GatherGuardians,
+                // not searched for now -- searching live here would let two guardians
+                // pick the same technician if a third one is missing, leaving one
+                // guardian's jump beat with nothing in range.
+                if (!Guardian(i))
+                    return;
+
+                if (Creature* technician = ObjectAccessor::GetCreature(*me, _guardians[i].technician))
+                    if (technician->IsAlive())
                         technician->AI()->DoAction(ACTION_TECHNICIAN_JUMP_IN);
             });
 
@@ -5982,6 +6008,10 @@ private:
     {
         ObjectGuid guid;
         size_t point;
+        // Empty if no technician was standing by this guardian when the assault
+        // started -- one still respawning from a run inside the last 78 s, say.
+        // The guardian wakes normally either way; it just skips the jump-in beat.
+        ObjectGuid technician;
     };
 
     Creature* Guardian(size_t i)

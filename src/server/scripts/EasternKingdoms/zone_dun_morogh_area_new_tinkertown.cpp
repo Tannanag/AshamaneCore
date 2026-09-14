@@ -5307,6 +5307,7 @@ enum CrushcogAssault
     NPC_RAZLO_CRUSHCOG_RIDER            = 42494,
     NPC_CRUSHCOGS_GUARDIAN              = 42294,
     NPC_CRUSHCOG_DEFEATED_CREDIT        = 42860,
+    NPC_CRUSHCOG_TECHNICIAN             = 43230,
 
     MENU_MEKKATORQUE_ASSAULT            = 11662,
 
@@ -5322,6 +5323,11 @@ enum CrushcogAssault
 
     // The idle pose the guardians hold until they are called up.
     SPELL_GUARDIAN_FREEZE_ANIM          = 16245,
+
+    // The technicians' idle "at work" pose. A self-buff dummy aura with no set
+    // duration, but the client channel bar it rides on runs out in a hair over
+    // ten seconds, so it is recast on a loop rather than applied once.
+    SPELL_TECHNICIAN_AT_WORK            = 78858,
 
     SAY_MEKKATORQUE_THERMAPLUGG         = 0,
     SAY_MEKKATORQUE_THWARTED            = 1,
@@ -5343,7 +5349,8 @@ enum CrushcogAssault
 
     ACTION_WAKE                         = 1,
     ACTION_JOIN_FIGHT                   = 2,
-    ACTION_STAND_DOWN                   = 3
+    ACTION_STAND_DOWN                   = 3,
+    ACTION_TECHNICIAN_JUMP_IN           = 4
 };
 
 // The two of them ride out of Mekkatorque's camp, through the stream and up the far
@@ -5454,6 +5461,10 @@ static constexpr size_t GUARDIAN_COUNT = std::extent<decltype(GuardianGatherPoin
 static constexpr float GUARDIAN_SEARCH_RANGE = 40.0f;
 static constexpr float CREDIT_RANGE = 40.0f;
 
+// Each technician stands 9-13 yd from its own guardian and better than 13 yd from
+// any other, so nearest-creature-in-range never picks the wrong one.
+static constexpr float TECHNICIAN_JUMP_RANGE = 20.0f;
+
 // Every beat, in milliseconds from the moment the player tells Mekkatorque to start.
 static constexpr uint32 BEAT_ASSAULT_MUSIC              = 177;
 static constexpr uint32 BEAT_MEKKATORQUE_SAY_THERMAPLUGG = 1295;
@@ -5466,6 +5477,9 @@ static constexpr uint32 BEAT_MEKKATORQUE_SETS_OFF       = 30456;
 static constexpr uint32 BEAT_BATTLE_MUSIC               = 47462;
 static constexpr uint32 BEAT_CRUSHCOG_SAY_ESCAPE        = 49086;
 static constexpr uint32 BEAT_CRUSHCOG_SAY_GUARDIANS     = 55096;
+// The technician beside each guardian jumps up onto it a couple of seconds before
+// the guardian itself drops its freeze pose -- the jump is what wakes it.
+static constexpr uint32 BEAT_TECHNICIANS_JUMP_IN        = 59845;
 static constexpr uint32 BEAT_GUARDIANS_WAKE             = 62045;
 static constexpr uint32 BEAT_GUARDIANS_GATHER           = 63269;
 static constexpr uint32 BEAT_GUARDIANS_SELECTABLE       = 66931;
@@ -5486,6 +5500,15 @@ static constexpr uint32 BEAT_MEKKATORQUE_LEAVES         = 109819;
 // The guardians wake and set off one after another, not as one.
 static constexpr uint32 GUARDIAN_STAGGER_MS             = 410;
 
+// The jump onto the guardian takes a little over a second; the technician is
+// destroyed (it has become the guardian's pilot) shortly after it lands.
+static constexpr float TECHNICIAN_JUMP_SPEED_XY         = 8.0f;
+static constexpr float TECHNICIAN_JUMP_SPEED_Z          = 8.0f;
+static constexpr uint32 TECHNICIAN_JUMP_LANDING_MS      = 1600;
+
+// How often the technician recasts its "at work" channel while it waits.
+static constexpr uint32 TECHNICIAN_WORK_INTERVAL_MS     = 10900;
+
 // Everyone is back about thirty seconds after Mekkatorque goes; the others left
 // earlier, so they wait longer. The guardians come back on their own clock, thirty
 // seconds after their bodies are cleared.
@@ -5499,9 +5522,9 @@ static constexpr uint32 GUARDIAN_CORPSE_MS              = 2500;
 // Crushcog is thrown clear when the mech dies, lands, and is dead a moment later.
 static constexpr uint32 RIDER_DEATH_MS                  = 1400;
 
-// Neither of the two can be killed. They fight at the level they are and the mech
-// would get nowhere near it, but a guardian's swing or a bystander's mistake must not
-// leave the player without a quest giver.
+// Neither of the two can be killed, and nor can the mech before its scripted death --
+// real damage from a guardian's swing, a bystander, or the player themselves during
+// the ~6 s it is unfrozen must not finish it before the Dragon Gun does.
 static void ClampToSurvive(Creature* creature, uint32& damage)
 {
     if (damage >= creature->GetHealth())
@@ -5719,6 +5742,16 @@ private:
         for (size_t i = 0; i < _guardians.size(); ++i)
         {
             uint32 stagger = uint32(i) * GUARDIAN_STAGGER_MS;
+
+            Beat(BEAT_TECHNICIANS_JUMP_IN + stagger, [this, i]
+            {
+                // The technician finds its own guardian rather than the other way
+                // round: each one stands close enough to its own that nothing else
+                // in range is nearer.
+                if (Creature* guardian = Guardian(i))
+                    if (Creature* technician = guardian->FindNearestCreature(NPC_CRUSHCOG_TECHNICIAN, TECHNICIAN_JUMP_RANGE))
+                        technician->AI()->DoAction(ACTION_TECHNICIAN_JUMP_IN);
+            });
 
             Beat(BEAT_GUARDIANS_WAKE + stagger, [this, i]
             {
@@ -6005,10 +6038,12 @@ private:
 };
 
 // The mech Crushcog rides. It never moves and never chases: it is spoken through,
-// fires its gun on Mekkatorque's cue, and dies when the Dragon Gun reaches it -- or
-// earlier, if the player gets there first, which is why the rider is handled here and
-// not on the High Tinker's clock. Crushcog is thrown clear as it dies, lands, and is
-// dead a second and a half later; the wreck is cleared shortly after.
+// fires its gun on Mekkatorque's cue, and dies when the Dragon Gun reaches it, which
+// is why the rider is handled here and not on the High Tinker's clock. Real damage is
+// clamped the same as Mekkatorque and Stonegrind's -- once it loses its immunity for
+// the ~6 s before that, a guardian's stray swing or the player's own hits must not
+// finish it ahead of the scripted kill. Crushcog is thrown clear as it dies, lands,
+// and is dead a second and a half later; the wreck is cleared shortly after.
 struct npc_razlo_crushcog_mech : public ScriptedAI
 {
     npc_razlo_crushcog_mech(Creature* creature) : ScriptedAI(creature) { }
@@ -6023,6 +6058,11 @@ struct npc_razlo_crushcog_mech : public ScriptedAI
     {
         if (apply && passenger->GetEntry() == NPC_RAZLO_CRUSHCOG_RIDER)
             _rider = passenger->GetGUID();
+    }
+
+    void DamageTaken(Unit* /*attacker*/, uint32& damage) override
+    {
+        ClampToSurvive(me, damage);
     }
 
     void JustDied(Unit* /*killer*/) override
@@ -6094,6 +6134,56 @@ struct npc_crushcogs_guardian : public ScriptedAI
 
         DoMeleeAttackIfReady();
     }
+};
+
+// Crushcog's Technicians, spawned in pairs beside two of the guardians. They stand
+// there recasting the "at work" channel on a loop -- it is not a lasting buff, it
+// just runs out in a hair over ten seconds -- until the assault calls them up. Each
+// then jumps onto its own guardian and is destroyed: on retail it visibly becomes the
+// pilot that turns the frozen suit into a fighter, which is why the guardian's own
+// wake beat follows a couple of seconds behind rather than firing on its own.
+struct npc_crushcog_technician : public ScriptedAI
+{
+    npc_crushcog_technician(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+        me->SetReactState(REACT_PASSIVE);
+        ScheduleWork();
+    }
+
+    void DoAction(int32 action) override
+    {
+        if (action != ACTION_TECHNICIAN_JUMP_IN)
+            return;
+
+        _scheduler.CancelAll();
+        me->InterruptNonMeleeSpells(false);
+
+        if (Creature* guardian = me->FindNearestCreature(NPC_CRUSHCOGS_GUARDIAN, TECHNICIAN_JUMP_RANGE))
+            me->GetMotionMaster()->MoveJump(guardian->GetHomePosition(), TECHNICIAN_JUMP_SPEED_XY, TECHNICIAN_JUMP_SPEED_Z);
+
+        // The DB respawn timer brings it back once the encounter itself resets.
+        me->DespawnOrUnsummon(Milliseconds(TECHNICIAN_JUMP_LANDING_MS));
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    void ScheduleWork()
+    {
+        _scheduler.Schedule(Milliseconds(1), [this](TaskContext task)
+        {
+            me->CastSpell(me, SPELL_TECHNICIAN_AT_WORK, true);
+            task.Repeat(Milliseconds(TECHNICIAN_WORK_INTERVAL_MS));
+        });
+    }
+
+    TaskScheduler _scheduler;
 };
 
 enum PaintItBlack
@@ -6260,6 +6350,7 @@ void AddSC_dun_morogh_area_new_tinkertown()
     RegisterCreatureAI(npc_mountaineer_stonegrind);
     RegisterCreatureAI(npc_razlo_crushcog_mech);
     RegisterCreatureAI(npc_crushcogs_guardian);
+    RegisterCreatureAI(npc_crushcog_technician);
     RegisterCreatureAI(npc_crushcog_sentry_bot);
     new player_safe_guide_summoner();
 }

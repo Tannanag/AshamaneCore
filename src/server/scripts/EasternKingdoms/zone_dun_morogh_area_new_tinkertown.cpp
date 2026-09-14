@@ -5302,6 +5302,7 @@ private:
 
 enum CrushcogAssault
 {
+    // NPC_HIGH_TINKER_MEKKATORQUE (42849) is already declared in DownWithCrushcog above.
     NPC_MOUNTAINEER_STONEGRIND          = 42852,
     NPC_RAZLO_CRUSHCOG_MECH             = 42839,
     NPC_RAZLO_CRUSHCOG_RIDER            = 42494,
@@ -5827,9 +5828,19 @@ private:
                 stonegrind->AI()->DoAction(ACTION_JOIN_FIGHT);
             }
 
-            // The guardians nearer Mekkatorque go for him, the rest for Stonegrind.
-            // Stonegrind opens on the farther of his: the shot has a minimum range
-            // that the near one can sit inside.
+            // This only arms the guardians -- it does not send them at anyone. Each
+            // one picks its own target (nearer of Mekkatorque or Stonegrind) and
+            // attacks the moment it is both armed and actually standing on its gather
+            // point, which is not necessarily this instant: a guardian still mid-walk
+            // when the true sons line lands waits for MovementInform to catch up
+            // rather than fighting from wherever it happens to be. Mekkatorque and
+            // Stonegrind's own first targets come from FightGuardians on their next
+            // UpdateAI, the same as picking a new one whenever the current victim
+            // drops.
+            //
+            // The shot is still worked out here, geometrically, since which guardian
+            // is which NPC's nearer or farther one does not depend on whether either
+            // side has actually started swinging yet.
             Creature* shot = nullptr;
             for (GuardianSlot const& slot : _guardians)
             {
@@ -5839,18 +5850,9 @@ private:
 
                 guardian->AI()->DoAction(ACTION_JOIN_FIGHT);
 
-                Creature* target = me;
                 if (stonegrind && guardian->GetDistance(stonegrind) < guardian->GetDistance(me))
-                    target = stonegrind;
-                guardian->AI()->AttackStart(target);
-
-                if (target == stonegrind)
-                {
                     if (!shot || stonegrind->GetDistance(guardian) > stonegrind->GetDistance(shot))
                         shot = guardian;
-                }
-                else if (!me->GetVictim())
-                    AttackStart(guardian);
             }
 
             if (stonegrind && shot)
@@ -6132,8 +6134,11 @@ struct npc_razlo_crushcog_mech : public ScriptedAI
     void UpdateAI(uint32 /*diff*/) override { }
 };
 
-// Crushcog's Guardians, the four that stand frozen round the mech. They are woken,
-// walked in and sent at the riders from Mekkatorque's clock; what is theirs is the
+// Crushcog's Guardians, the four that stand frozen round the mech. Waking and walking
+// in are still Mekkatorque's clock, but each one attacks the moment it is actually
+// standing on its gather point rather than on a further timed guess -- arriving late
+// (movement lag, a long walk from an odd spawn) delays that guardian's own attack
+// instead of having it swing from wherever it happened to be. What is theirs is the
 // fight itself and what happens to the body. A dead guardian is cleared quickly and
 // is back, frozen and immune again, half a minute later, whether or not the rest of
 // the scene is still going.
@@ -6144,6 +6149,8 @@ struct npc_crushcogs_guardian : public ScriptedAI
     void Reset() override
     {
         me->SetReactState(REACT_PASSIVE);
+        _armed = false;
+        _arrived = false;
     }
 
     void DoAction(int32 action) override
@@ -6156,10 +6163,23 @@ struct npc_crushcogs_guardian : public ScriptedAI
             case ACTION_JOIN_FIGHT:
                 me->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
                 me->SetReactState(REACT_AGGRESSIVE);
+                _armed = true;
+                EngageIfReady();
                 break;
             default:
                 break;
         }
+    }
+
+    // MovePoint reports back through POINT_MOTION_TYPE, not the EFFECT_MOTION_TYPE a
+    // MoveSmoothPath leg would give.
+    void MovementInform(uint32 type, uint32 id) override
+    {
+        if (type != POINT_MOTION_TYPE || id != POINT_GUARDIAN_GATHER)
+            return;
+
+        _arrived = true;
+        EngageIfReady();
     }
 
     void JustDied(Unit* /*killer*/) override
@@ -6174,6 +6194,30 @@ struct npc_crushcogs_guardian : public ScriptedAI
 
         DoMeleeAttackIfReady();
     }
+
+private:
+    // Armed (the fight has actually started) and arrived (this guardian is actually
+    // standing on its gather point, not still walking to it) can land in either
+    // order -- under normal timing arrival comes first, but nothing here assumes
+    // that. Whichever finishes second is what starts the attack.
+    void EngageIfReady()
+    {
+        if (!_armed || !_arrived)
+            return;
+
+        Creature* mekkatorque = me->FindNearestCreature(NPC_HIGH_TINKER_MEKKATORQUE, GUARDIAN_SEARCH_RANGE);
+        Creature* stonegrind = me->FindNearestCreature(NPC_MOUNTAINEER_STONEGRIND, GUARDIAN_SEARCH_RANGE);
+
+        Creature* target = mekkatorque;
+        if (stonegrind && (!mekkatorque || me->GetDistance(stonegrind) < me->GetDistance(mekkatorque)))
+            target = stonegrind;
+
+        if (target)
+            AttackStart(target);
+    }
+
+    bool _armed = false;
+    bool _arrived = false;
 };
 
 // Crushcog's Technicians, spawned in pairs beside two of the guardians. They stand

@@ -2660,7 +2660,6 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                     case SPELL_EFFECT_APPLY_AREA_AURA_ENEMY:
                     case SPELL_EFFECT_APPLY_AREA_AURA_PET:
                     case SPELL_EFFECT_APPLY_AREA_AURA_OWNER:
-                    {
                         if (effect->ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
                             effect->ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE_PERCENT ||
                             effect->ApplyAuraName == SPELL_AURA_DUMMY ||
@@ -2668,7 +2667,7 @@ void SpellMgr::LoadSpellInfoCustomAttributes()
                             effect->ApplyAuraName == SPELL_AURA_PERIODIC_HEALTH_FUNNEL ||
                             effect->ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
                             break;
-                    }
+                        /* fallthrough */
                     default:
                     {
                         // No value and not interrupt cast or crowd control without SPELL_ATTR0_UNAFFECTED_BY_INVULNERABILITY flag
@@ -3470,6 +3469,13 @@ void SpellMgr::LoadSpellInfoCorrections()
         spellInfo->Speed = 0.0f;    // This spell's summon happens instantly
     });
 
+    // Chilled to the Bone
+    ApplySpellFix({ 70106 }, [](SpellInfo* spellInfo)
+    {
+        spellInfo->AttributesEx3 |= SPELL_ATTR3_NO_DONE_BONUS;
+        spellInfo->AttributesEx6 |= SPELL_ATTR6_NO_DONE_PCT_DAMAGE_MODS;
+    });
+
     // Ice Lock
     ApplySpellFix({ 71614 }, [](SpellInfo* spellInfo)
     {
@@ -4012,6 +4018,14 @@ void SpellMgr::LoadSpellInfoCorrections()
         const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->MiscValue = 150;
     });
     /// Gilneas END ///
+
+    /// Val'sharah ///
+        ApplySpellFix({
+        181481, // Summon Malfurion (Cenarius, Keeper of the Grove)
+    }, [](SpellInfo* spellInfo)
+    {
+        const_cast<SpellEffectInfo*>(spellInfo->GetEffect(EFFECT_0))->TargetA = SpellImplicitTargetInfo(TARGET_DEST_DB);
+    });
 
     SpellInfo* spellInfo = NULL;
     for (uint32 i = 0; i < GetSpellInfoStoreSize(); ++i)

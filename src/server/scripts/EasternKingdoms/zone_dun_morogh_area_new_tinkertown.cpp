@@ -742,7 +742,7 @@ private:
     {
         // The path ends a yard short of the bed with the Operative still facing down
         // the ramp, so it is turned to face what it is about to put down.
-        me->SetFacingTo(me->GetAngle(&GnomeBedPosition));
+        me->SetFacingTo(me->GetAngle(&GnomeBedPosition), false);
 
         _scheduler.Schedule(ARRIVE_TO_KNEEL, [this](TaskContext /*task*/)
         {
@@ -800,7 +800,7 @@ private:
 
     void EndRun()
     {
-        me->SetFacingTo(me->GetHomePosition().GetOrientation());
+        me->SetFacingTo(me->GetHomePosition().GetOrientation(), false);
 
         // PLACED_GNOME_LIFETIME has already collected the gnome by now. This is for the
         // run that somehow gets here first: nothing else would come to clear the bed.
@@ -1183,11 +1183,11 @@ struct npc_physicians_assistant_greeter : public ScriptedAI
             return;
 
         if (id == POINT_MEET)
-            me->SetFacingTo(FACING_MEET);
+            me->SetFacingTo(FACING_MEET, false);
         else if (id == POINT_POST)
-            me->SetFacingTo(FACING_POST);
+            me->SetFacingTo(FACING_POST, false);
         else if (id == POINT_ASSISTANT_HOME)
-            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+            me->SetFacingTo(me->GetHomePosition().GetOrientation(), false);
     }
 
     void UpdateAI(uint32 diff) override
@@ -1363,7 +1363,7 @@ private:
         // north-west into the wall, so a gnome that sits on the direction it arrived on
         // has its back to the room. Retail sends the turn and the stand state in the
         // same instant, the turn first.
-        arrival->SetFacingTo(FACING_MAT);
+        arrival->SetFacingTo(FACING_MAT, false);
         arrival->SetStandState(UNIT_STAND_STATE_SIT);
     }
 
@@ -1556,7 +1556,7 @@ static void RestrainGnome(Creature* gnome)
 // What is left is the faction, which is the whole of it.
 static void CondemnGnome(Creature* gnome)
 {
-    gnome->setFaction(FACTION_CONDEMNED_GNOME);
+    gnome->SetFaction(FACTION_CONDEMNED_GNOME);
 }
 
 // Undoes both of the above, and every path that lets go of a gnome comes through it --
@@ -1878,7 +1878,7 @@ private:
 
     void Grab(Creature* gnome)
     {
-        me->SetFacingToObject(gnome);
+        me->SetFacingToObject(gnome, false);
 
         // Before the cast, not after it. Spell::DoAllEffectOnTarget ends in
         // CombatStart(unit, ...) for any target the caster is not friendly to, and
@@ -2237,7 +2237,7 @@ struct npc_safe_operative_firing_squad : public ScriptedAI
 
             if (me->IsWithinDistInMap(gnome, SQUAD_FIRE_RANGE))
             {
-                me->SetFacingToObject(gnome);
+                me->SetFacingToObject(gnome, false);
 
                 uint32 const shot = ShotSpell();
 
@@ -2317,7 +2317,7 @@ private:
             // -- so a line that has executed once stands angled at the drop point for the
             // rest of the uptime instead of along its own front. The spawn orientation is
             // the line's facing, so it is put back with the mark.
-            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+            me->SetFacingTo(me->GetHomePosition().GetOrientation(), false);
         }
 
         _mark.Clear();
@@ -2573,7 +2573,7 @@ struct npc_safe_guide : public ScriptedAI
 
         _playerGuid = player->GetGUID();
         me->SetWalk(true);
-        me->SetFacingToObject(player);
+        me->SetFacingToObject(player, false);
 
         _scheduler.Schedule(SUMMON_TO_FOLLOW_LINE, [this](TaskContext /*task*/)
         {
@@ -2597,7 +2597,7 @@ struct npc_safe_guide : public ScriptedAI
             return;
         }
 
-        me->SetFacingTo(SAFE_GUIDE_MAGE_FACING);
+        me->SetFacingTo(SAFE_GUIDE_MAGE_FACING, false);
         Talk(SAY_GUIDE_INTRODUCE, ObjectAccessor::GetPlayer(*me, _playerGuid));
         me->DespawnOrUnsummon(ARRIVE_TO_UNSUMMON);
     }
@@ -4186,7 +4186,7 @@ private:
             // about eight tenths of a second after it -- by which time the half-second
             // spline is long finished, so nothing overwrites this.
             if (Creature* crushcog = FindActor(NPC_IMAGE_OF_RAZLO_CRUSHCOG))
-                crushcog->SetFacingTo(CRUSHCOG_FACING);
+                crushcog->SetFacingTo(CRUSHCOG_FACING, false);
         });
 
         Beat(BEAT_CRUSHCOG_EXCLAIM, [this]
@@ -4538,7 +4538,7 @@ private:
         // The leg above ends without a facing of its own, and this lands two and a half
         // seconds after it -- well clear of the two-second spline, so nothing overwrites
         // it.
-        Beat(BEAT_TOCK_FACES_MACHINE, [this] { me->SetFacingTo(TOCK_FACING_MACHINE); });
+        Beat(BEAT_TOCK_FACES_MACHINE, [this] { me->SetFacingTo(TOCK_FACING_MACHINE, false); });
 
         Beat(BEAT_TOCK_GOGGLES_ON, [this]
         {
@@ -4660,7 +4660,7 @@ private:
             // bearing he arrived on has his back to the conversation.
             if (Creature* gnome = Gnome())
             {
-                gnome->SetFacingTo(RECOVERED_GNOME_FACING);
+                gnome->SetFacingTo(RECOVERED_GNOME_FACING, false);
                 gnome->SetStandState(UNIT_STAND_STATE_STAND);
             }
         });
@@ -5150,7 +5150,7 @@ private:
     void ScheduleJarvi()
     {
         Beat(BEAT_JARVI_SAY_DEFEATED,  [this] { Talk(SAY_JARVI_DEFEATED, Celebrant()); });
-        Beat(BEAT_JARVI_FACES_ARRIVAL, [this] { me->SetFacingTo(JARVI_FACING_ARRIVAL); });
+        Beat(BEAT_JARVI_FACES_ARRIVAL, [this] { me->SetFacingTo(JARVI_FACING_ARRIVAL, false); });
         Beat(BEAT_JARVI_SIGNAL,        [this] { me->PlayDistanceSound(SOUND_JARVI_SIGNAL); });
 
         Beat(BEAT_JARVI_SAY_HEROES, [this]
@@ -5159,7 +5159,7 @@ private:
             me->CastSpell(me, SPELL_PURPLE_FIREWORK, true);
         });
 
-        Beat(BEAT_JARVI_FACES_HOME, [this] { me->SetFacingTo(me->GetHomePosition().GetOrientation()); });
+        Beat(BEAT_JARVI_FACES_HOME, [this] { me->SetFacingTo(me->GetHomePosition().GetOrientation(), false); });
     }
 
     void ScheduleMekkatorque()
@@ -5640,7 +5640,7 @@ struct npc_high_tinker_mekkatorque_assault : public ScriptedAI
         if (id == POINT_MEKKATORQUE_MARK || id == POINT_MEKKATORQUE_RETURN)
         {
             RestoreSpeeds(me);
-            me->SetFacingTo(MekkatorqueAssaultMark.GetOrientation());
+            me->SetFacingTo(MekkatorqueAssaultMark.GetOrientation(), false);
         }
     }
 
@@ -5826,7 +5826,7 @@ private:
             if (stonegrind)
             {
                 stonegrind->SetWalk(false);
-                stonegrind->SetFacingTo(STONEGRIND_FIGHT_FACING);
+                stonegrind->SetFacingTo(STONEGRIND_FIGHT_FACING, false);
                 stonegrind->AI()->DoAction(ACTION_JOIN_FIGHT);
             }
 
@@ -5876,7 +5876,7 @@ private:
             if (Creature* mech = Mech())
             {
                 mech->RemoveFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_IMMUNE_TO_PC | UNIT_FLAG_IMMUNE_TO_NPC);
-                mech->SetFacingToObject(me);
+                mech->SetFacingToObject(me, false);
                 mech->CastSpell(me, SPELL_MACHINE_GUN);
                 me->CastSpell(mech, SPELL_SUPER_SHRINK_RAY);
             }
@@ -5885,13 +5885,13 @@ private:
         Beat(BEAT_MEKKATORQUE_BOMB, [this]
         {
             me->StopMoving();
-            me->SetFacingTo(MEKKATORQUE_BOMB_FACING);
+            me->SetFacingTo(MEKKATORQUE_BOMB_FACING, false);
             me->CastSpell(MekkatorqueBombMark, SPELL_BOMB, false);
         });
 
         Beat(BEAT_MEKKATORQUE_DRAGON_GUN, [this]
         {
-            me->SetFacingTo(MekkatorqueGunMark.GetOrientation());
+            me->SetFacingTo(MekkatorqueGunMark.GetOrientation(), false);
             me->CastSpell(me, SPELL_GOBLIN_DRAGON_GUN);
         });
 
@@ -6088,7 +6088,7 @@ struct npc_mountaineer_stonegrind : public ScriptedAI
         else if (id == POINT_STONEGRIND_RETURN)
         {
             me->SetSpeedRate(MOVE_RUN, me->GetCreatureTemplate()->speed_run);
-            me->SetFacingTo(StonegrindAssaultMark.GetOrientation());
+            me->SetFacingTo(StonegrindAssaultMark.GetOrientation(), false);
         }
     }
 
@@ -6354,7 +6354,7 @@ struct npc_crushcog_sentry_bot : public ScriptedAI
         me->GetMotionMaster()->Clear(false);
         me->GetMotionMaster()->MoveIdle();
 
-        me->SetFacingToObject(player);
+        me->SetFacingToObject(player, false);
         Talk(SAY_SENTRY_SHUTDOWN, player);
         me->GetMotionMaster()->MoveFleeing(player, SENTRY_BLIND_DASH_MS);
 

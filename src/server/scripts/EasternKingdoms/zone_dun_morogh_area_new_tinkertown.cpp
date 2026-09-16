@@ -5038,10 +5038,12 @@ static constexpr uint32 BEAT_JARVI_SAY_HEROES       = 14400;
 static constexpr uint32 BEAT_MOUNTAINEER_DRINKS     = 16800;
 static constexpr uint32 BEAT_SECOND_CHEER           = 19200;
 static constexpr uint32 BEAT_JARVI_FACES_HOME       = 19200;
-static constexpr uint32 BEAT_CELEBRATION_ENDS       = 22500;
+static constexpr uint32 BEAT_CELEBRATION_ENDS       = 25500;
 
-// Mekkatorque is gone with the last of the cheering. A timed despawn rather than a
-// scheduled one so that a run cut short still takes him away.
+// Mekkatorque stays until his speech has finished playing: the voice-over runs fifteen
+// seconds from BEAT_MEKKATORQUE_SPEAKS, and the client cuts a sound off with its source.
+// A timed despawn rather than a scheduled one so that a run cut short still takes him
+// away.
 static constexpr uint32 MEKKATORQUE_LIFETIME_MS     = BEAT_CELEBRATION_ENDS - BEAT_MEKKATORQUE_ARRIVES;
 
 // What the infantry throw when they cheer. Applause and cheers lead, with the odd shout

@@ -3515,6 +3515,69 @@ class spell_item_unusual_compass : public SpellScriptLoader
         }
 };
 
+enum DestroyMechanoTank
+{
+    NPC_REPAIRED_MECHANO_TANK    = 42224,
+
+    // "Explosion (cast time)", a generic boom visual reused for other things (exploding
+    // boats, per its own tooltip). The retail sniff has the tank cast this on itself the
+    // instant the grenade lands, not the grenade's own spell doing anything further.
+    SPELL_MECHANO_TANK_EXPLOSION = 80476
+};
+
+// Techno-Grenade (item 58200), quest 26333 "No Tanks!". Checked against a sniff
+// (dump_12.1.0.69587_2026-09-08_21-37-32) of a player actually clearing all 5 tanks: the
+// grenade's own hit does nothing by itself, the tank casts its own explosion, and
+// SMSG_QUEST_UPDATE_ADD_CREDIT is sent with VictimGUID 0 -- a direct credit call, not the
+// product of a kill. That matters here: the tank carries UNIT_FLAG_IMMUNE_TO_PC |
+// UNIT_FLAG_IMMUNE_TO_NPC and is never actually damaged, so Unit::Kill()'s own reward path
+// (gated on Creature::IsDamageEnoughForLootingAndReward(), i.e. m_PlayerDamageReq ever
+// having been brought down by real damage) never fires on its own -- crediting has to be
+// done directly. Kill() is still called after, purely for the death animation/corpse
+// instead of the tank just vanishing; it grants no second credit since the same damage
+// check blocks its own reward path.
+class spell_item_destroy_mechano_tank : public SpellScriptLoader
+{
+    public:
+        spell_item_destroy_mechano_tank() : SpellScriptLoader("spell_item_destroy_mechano_tank") { }
+
+        class spell_item_destroy_mechano_tank_SpellScript : public SpellScript
+        {
+            PrepareSpellScript(spell_item_destroy_mechano_tank_SpellScript);
+
+            bool Load() override
+            {
+                return GetCaster()->GetTypeId() == TYPEID_PLAYER;
+            }
+
+            bool Validate(SpellInfo const* /*spell*/) override
+            {
+                return ValidateSpellInfo({ SPELL_MECHANO_TANK_EXPLOSION });
+            }
+
+            void HandleDummy(SpellEffIndex /*effIndex*/)
+            {
+                Creature* tank = GetHitCreature();
+                if (!tank || tank->GetEntry() != NPC_REPAIRED_MECHANO_TANK)
+                    return;
+
+                tank->CastSpell(tank, SPELL_MECHANO_TANK_EXPLOSION, true);
+                GetCaster()->ToPlayer()->KilledMonsterCredit(NPC_REPAIRED_MECHANO_TANK);
+                GetCaster()->Kill(tank);
+            }
+
+            void Register() override
+            {
+                OnEffectHitTarget += SpellEffectFn(spell_item_destroy_mechano_tank_SpellScript::HandleDummy, EFFECT_0, SPELL_EFFECT_DUMMY);
+            }
+        };
+
+        SpellScript* GetSpellScript() const override
+        {
+            return new spell_item_destroy_mechano_tank_SpellScript();
+        }
+};
+
 enum ChickenCover
 {
     SPELL_CHICKEN_NET               = 51959,
@@ -4994,6 +5057,7 @@ void AddSC_item_spell_scripts()
     new spell_item_pygmy_oil();
     new spell_item_unusual_compass();
     new spell_item_chicken_cover();
+    new spell_item_destroy_mechano_tank();
     new spell_item_muisek_vessel();
     new spell_item_greatmothers_soulcatcher();
     new spell_item_shard_of_the_scale<SPELL_PURIFIED_CAUTERIZING_HEAL, SPELL_PURIFIED_SEARING_FLAMES>("spell_item_purified_shard_of_the_scale");

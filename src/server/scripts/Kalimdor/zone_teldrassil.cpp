@@ -19,7 +19,11 @@
 #include "Creature.h"
 #include "MoveSpline.h"
 #include "MoveSplineInit.h"
+#include "ObjectAccessor.h"
 #include "PassiveAI.h"
+#include "Player.h"
+#include "ScriptedCreature.h"
+#include "TaskScheduler.h"
 #include "WaypointManager.h"
 #include <G3D/Vector3.h>
 
@@ -96,7 +100,146 @@ private:
     }
 };
 
+// Moriana Dawnlight (34756) and Doranel Amberleaf (34757) stand together at the top
+// of Aldrassil and, when a player steps between them, Amberleaf voices her doubts
+// about Fandral, Dawnlight hushes her, and both turn to look at the player before
+// turning back. In the 14 Sep sniff the scene is not an OOC line-of-sight bark: it
+// fires on areatrigger 5481 (r 3.95 at 10452.4, 843.4, the spot between them) and
+// only on entering it -- the client sends the leave 1.2 s later and nothing answers
+// it. SmartTrigger fires SMART_EVENT_AREATRIGGER_ONTRIGGER on leave as well, and
+// SMART_ACTION_SET_DATA drops the invoker, so a SmartAI build could neither ignore
+// the leave nor have the two face the player; hence the C++.
+//
+// Dawnlight owns the lockout. At T0 she casts 88811 "CSA Area Trigger Dummy Timer
+// Aura" on herself, a 30 s dummy, and while she carries it the trigger does nothing:
+// at 23:39:15 another player set the scene off and the sniffed player's own entry
+// at 23:39:36 was ignored. Offsets below are from her cast, identical in both runs
+// the player caused (23:08:18 and 23:10:18):
+//   +0.1 s  Amberleaf: "Don't get me wrong... What happened to Fandral?"
+//   +3.2 s  Dawnlight: "Shh! Someone's here."
+//   +4.3 s  both face the player (MonsterMove Face: Target)
+//  +15.2 s  both face their spawn orientation again (Face: Angle 5.0615 / 2.0246)
+enum DawnlightAmberleafData
+{
+    NPC_MORIANA_DAWNLIGHT                       = 34756,
+    NPC_DORANEL_AMBERLEAF                       = 34757,
+    SPELL_CSA_AREA_TRIGGER_DUMMY_TIMER_AURA     = 88811,
+
+    SAY_AMBERLEAF_WHAT_HAPPENED_TO_FANDRAL      = 0,
+    SAY_DAWNLIGHT_SOMEONE_IS_HERE               = 0
+};
+
+struct npc_moriana_dawnlight : public ScriptedAI
+{
+    npc_moriana_dawnlight(Creature* creature) : ScriptedAI(creature) { }
+
+    void Reset() override
+    {
+        _scheduler.CancelAll();
+    }
+
+    // Called by the areatrigger script with the player who stepped on 5481.
+    void SetGUID(ObjectGuid guid, int32 /*id*/) override
+    {
+        // The aura is the lockout, as on retail: no restart, no queue.
+        if (me->HasAura(SPELL_CSA_AREA_TRIGGER_DUMMY_TIMER_AURA))
+            return;
+
+        // Amberleaf spawns 1.4 yd from her; if she is not there (dead, despawned)
+        // there is no conversation to have.
+        Creature* amberleaf = me->FindNearestCreature(NPC_DORANEL_AMBERLEAF, 10.0f);
+        if (!amberleaf)
+            return;
+
+        _playerGUID = guid;
+        _amberleafGUID = amberleaf->GetGUID();
+        _scheduler.CancelAll();
+
+        // A real cast -- the sniff has SMSG_SPELL_START and SMSG_SPELL_GO for it,
+        // not just the aura update. Cast time is 0 so nothing waits on it.
+        DoCastSelf(SPELL_CSA_AREA_TRIGGER_DUMMY_TIMER_AURA);
+
+        _scheduler.Schedule(Milliseconds(100), [this](TaskContext /*task*/)
+        {
+            if (Creature* amberleaf = GetAmberleaf())
+                amberleaf->AI()->Talk(SAY_AMBERLEAF_WHAT_HAPPENED_TO_FANDRAL);
+        });
+
+        _scheduler.Schedule(Milliseconds(3200), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_DAWNLIGHT_SOMEONE_IS_HERE);
+        });
+
+        _scheduler.Schedule(Milliseconds(4300), [this](TaskContext /*task*/)
+        {
+            // The player may have logged out or moved out of range in the 4 s; the
+            // scene still finishes, they just do not turn.
+            if (Player* player = ObjectAccessor::GetPlayer(*me, _playerGUID))
+            {
+                me->SetFacingToObject(player);
+                if (Creature* amberleaf = GetAmberleaf())
+                    amberleaf->SetFacingToObject(player);
+            }
+        });
+
+        _scheduler.Schedule(Milliseconds(15200), [this](TaskContext /*task*/)
+        {
+            // Spawn orientation, not a fixed angle: both spawns sit on the sniffed
+            // marks to the bit and MovementType 0 keeps the home position there.
+            me->SetFacingTo(me->GetHomePosition().GetOrientation());
+            if (Creature* amberleaf = GetAmberleaf())
+                amberleaf->SetFacingTo(amberleaf->GetHomePosition().GetOrientation());
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        // Out of combat too -- the whole scene is out of combat.
+        _scheduler.Update(diff);
+
+        if (!UpdateVictim())
+            return;
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    Creature* GetAmberleaf() const
+    {
+        return ObjectAccessor::GetCreature(*me, _amberleafGUID);
+    }
+
+    TaskScheduler _scheduler;
+    ObjectGuid _playerGUID;
+    ObjectGuid _amberleafGUID;
+};
+
+// Areatrigger 5481, the spot between the two.
+class at_aldrassil_dawnlight_amberleaf : public AreaTriggerScript
+{
+public:
+    at_aldrassil_dawnlight_amberleaf() : AreaTriggerScript("at_aldrassil_dawnlight_amberleaf") { }
+
+    bool OnTrigger(Player* player, AreaTriggerEntry const* /*trigger*/, bool entered) override
+    {
+        // The client reports the leave too, about a second later; retail answers
+        // only the entry.
+        if (!entered || !player->IsAlive())
+            return false;
+
+        // 11 yd from the trigger centre to the pair.
+        Creature* dawnlight = player->FindNearestCreature(NPC_MORIANA_DAWNLIGHT, 30.0f);
+        if (!dawnlight)
+            return false;
+
+        dawnlight->AI()->SetGUID(player->GetGUID());
+        return true;
+    }
+};
+
 void AddSC_teldrassil()
 {
     RegisterCreatureAI(npc_wisp_flight_path);
+    RegisterCreatureAI(npc_moriana_dawnlight);
+    new at_aldrassil_dawnlight_amberleaf();
 }

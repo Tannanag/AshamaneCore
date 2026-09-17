@@ -1,0 +1,12 @@
+-- Shadowglen: A Favor for Melithar (28734) was still not offered next to Fel Moss
+-- Corruption (28714) after 2026_09_16_06, on a character with The Balance of
+-- Nature rewarded, Fel Moss Corruption in the log and Demonic Thieves untaken.
+--
+-- quest_template.RewardNextQuest is not only the quest auto-offered at turn-in: the
+-- core builds prevChainQuests from it, and SatisfyQuestPrevChain refuses a quest
+-- while any quest that names it as RewardNextQuest is in the log. Fel Moss
+-- Corruption's RewardNextQuest 28734 (the retail value, kept in 2026_09_16_06)
+-- therefore locked the errand for exactly as long as the fel moss was being
+-- collected -- and SatisfyQuestNextChain would have locked Fel Moss Corruption for
+-- anyone who took the errand first. Cleared; the two are meant to sit side by side.
+UPDATE `quest_template` SET `RewardNextQuest`=0 WHERE `ID`=28714;

@@ -565,6 +565,259 @@ public:
     }
 };
 
+// Tarindrella (49480), the dryad who walks Shadowthread Cave with each player from
+// 28725 "The Woodland Protector" until 28728 "Signs of Things to Come" is taken.
+//
+// Retail summons her per player and the DB already carries the mechanism: spell_area
+// 92237 on the player while he is in area 257 and lacks 92239; 92237 triggers 92238
+// at once and every 10 s; 92238 summons her 7 yd behind the player with
+// SummonProperties 2996 -- Control ALLY, flag 512, PERSONAL_SPAWN -- so the core makes
+// her a Guardian of the player, at his level and faction, visible to him alone. She
+// answers 1.7 s later with 92239 "Tarindrella Guardian Aura" on her owner, which is
+// what stops the next 92238 tick from summoning a second one, and greets him. Leave
+// the cave and she is gone in the same second; 92239 goes with her and the next tick
+// after walking back in brings her back -- the flicker the sniff shows at the cave lip
+// (three copies in one run, one of them alive for two seconds).
+//
+// In the 14 Sep sniff she is no passive escort: she opens every fight of the owner's
+// with 33844 Entangling Roots (7 casts in a five-minute run, one per spider or so)
+// and calls three treants with 92573 Summon Nature's Bite five times over the same
+// run, never twice within 14 s. Each treant announces itself with 37846 on arrival.
+// She takes the owner's target and drops the fight when he walks off.
+//
+// Twelve Webwood Spider kills for 28726 got one bark from her copy, on kill #4, and
+// a second player's copy barked once in the same two minutes: a random group-1 line
+// on roughly one kill in ten. Githyiss the Vile dying within 20 yd (anyone's kill --
+// 1994's SmartAI sets data 1/1 on every Tarindrella in range) has her name the totem
+// 2.0 s later and, if the Gnarlpine Corruption Totem 49598 stands within reach, go
+// for it with melee and 92573; the sniff has it dead 5 s after she engages, and she
+// has no retail damage table here, so she finishes it herself at that mark. The
+// totem is IMMUNE_TO_NPC, which a player's guardian ignores; her treants are flagged
+// player-controlled for the same reason.
+//
+// Accepting 28728 from her casts 92420 on the player (spell_target_position: the
+// cured Dentaria's side, facing 3.4732) and destroys her in the same packet. The
+// farewell line 49480/4 is not said anywhere in the sniff.
+enum TarindrellaData
+{
+    NPC_TARINDRELLA                         = 49480,
+    NPC_WEBWOOD_SPIDER                      = 1986,
+    NPC_GNARLPINE_CORRUPTION_TOTEM          = 49598,
+
+    SPELL_TARINDRELLA_GUARDIAN_AURA         = 92239,
+    SPELL_ENTANGLING_ROOTS                  = 33844,
+    SPELL_SUMMON_NATURES_BITE               = 92573,
+    SPELL_FORCE_OF_NATURE                   = 37846,
+    SPELL_TARINDRELLAS_NATURE_TELEPORT      = 92420,
+
+    QUEST_SIGNS_OF_THINGS_TO_COME           = 28728,
+    AREA_SHADOWTHREAD_CAVE                  = 257,
+
+    SAY_TARINDRELLA_COME_TO_HELP            = 0,
+    SAY_TARINDRELLA_SPIDER_KILLED           = 1,
+    SAY_TARINDRELLA_TOTEM                   = 2,
+
+    DATA_GITHYISS_DIED                      = 1,
+    ACTION_OWNER_KILLED_SPIDER              = 1,
+
+    GROUP_TARINDRELLA_COMBAT                = 1
+};
+
+uint32 const NaturesBiteCooldown = 20000;
+
+// The player's own Tarindrella, if she is with him.
+Creature* FindTarindrellaOf(Player* player)
+{
+    for (Unit* controlled : player->m_Controlled)
+        if (controlled->GetEntry() == NPC_TARINDRELLA)
+            return controlled->ToCreature();
+    return nullptr;
+}
+
+struct npc_tarindrella : public ScriptedAI
+{
+    npc_tarindrella(Creature* creature) : ScriptedAI(creature), _naturesBiteTime(0) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        _ownerGUID = summoner->GetGUID();
+
+        // Defensive, not aggressive: the fights she joins are the owner's, not every
+        // spider she has line of sight to.
+        me->SetReactState(REACT_DEFENSIVE);
+
+        _scheduler.Schedule(Milliseconds(1700), [this](TaskContext /*task*/)
+        {
+            DoCastSelf(SPELL_TARINDRELLA_GUARDIAN_AURA, true);
+            Talk(SAY_TARINDRELLA_COME_TO_HELP, GetOwner());
+        });
+
+        // Gone the moment the owner is out of the cave, off the map or logged out.
+        _scheduler.Schedule(Seconds(1), [this](TaskContext task)
+        {
+            Player* owner = GetOwner();
+            if (!owner || owner->GetAreaId() != AREA_SHADOWTHREAD_CAVE)
+            {
+                me->DespawnOrUnsummon();
+                return;
+            }
+
+            task.Repeat();
+        });
+    }
+
+    void EnterCombat(Unit* /*who*/) override
+    {
+        _scheduler.CancelGroup(GROUP_TARINDRELLA_COMBAT);
+
+        _scheduler.Schedule(Milliseconds(0), GROUP_TARINDRELLA_COMBAT, [this](TaskContext task)
+        {
+            DoCastVictim(SPELL_ENTANGLING_ROOTS);
+            task.Repeat(Seconds(12));
+        });
+
+        _scheduler.Schedule(Milliseconds(1600), GROUP_TARINDRELLA_COMBAT, [this](TaskContext task)
+        {
+            if (GetMSTimeDiffToNow(_naturesBiteTime) >= NaturesBiteCooldown)
+            {
+                _naturesBiteTime = getMSTime();
+                DoCastVictim(SPELL_SUMMON_NATURES_BITE);
+            }
+
+            task.Repeat(Seconds(3));
+        });
+    }
+
+    void EnterEvadeMode(EvadeReason why) override
+    {
+        _scheduler.CancelGroup(GROUP_TARINDRELLA_COMBAT);
+        ScriptedAI::EnterEvadeMode(why);
+    }
+
+    void JustSummoned(Creature* summon) override
+    {
+        // A player's guardian may hit the IMMUNE_TO_NPC totem; her treants need the
+        // same flag to follow her onto it.
+        summon->SetFlag(UNIT_FIELD_FLAGS, UNIT_FLAG_PVP_ATTACKABLE);
+        summon->CastSpell(summon, SPELL_FORCE_OF_NATURE, true);
+        if (Unit* victim = me->GetVictim())
+            summon->AI()->AttackStart(victim);
+    }
+
+    void KilledUnit(Unit* victim) override
+    {
+        if (victim->GetEntry() == NPC_WEBWOOD_SPIDER)
+            DoAction(ACTION_OWNER_KILLED_SPIDER);
+    }
+
+    void DoAction(int32 action) override
+    {
+        if (action == ACTION_OWNER_KILLED_SPIDER && roll_chance_i(10))
+            Talk(SAY_TARINDRELLA_SPIDER_KILLED);
+    }
+
+    void SetData(uint32 id, uint32 /*value*/) override
+    {
+        if (id != DATA_GITHYISS_DIED)
+            return;
+
+        _scheduler.Schedule(Seconds(2), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_TARINDRELLA_TOTEM);
+
+            Creature* totem = me->FindNearestCreature(NPC_GNARLPINE_CORRUPTION_TOTEM, 20.0f);
+            if (!totem)
+                return;
+
+            AttackStart(totem);
+            DoCast(totem, SPELL_SUMMON_NATURES_BITE);
+
+            ObjectGuid totemGUID = totem->GetGUID();
+            _scheduler.Schedule(Seconds(5), [this, totemGUID](TaskContext /*task*/)
+            {
+                Creature* totem = ObjectAccessor::GetCreature(*me, totemGUID);
+                if (totem && totem->IsAlive() && me->GetVictim() == totem)
+                    me->Kill(totem);
+            });
+        });
+    }
+
+    void sQuestAccept(Player* player, Quest const* quest) override
+    {
+        if (quest->GetQuestId() != QUEST_SIGNS_OF_THINGS_TO_COME)
+            return;
+
+        player->CastSpell(player, SPELL_TARINDRELLAS_NATURE_TELEPORT, true);
+        me->DespawnOrUnsummon();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+
+        if (!UpdateVictim())
+        {
+            if (Unit* target = OwnerTarget())
+                AttackStart(target);
+            return;
+        }
+
+        // She stays with the owner rather than finishing a fight he has walked out of.
+        if (Player* owner = GetOwner())
+            if (!me->IsWithinDist(owner, 40.0f))
+            {
+                EnterEvadeMode(EVADE_REASON_OTHER);
+                return;
+            }
+
+        DoMeleeAttackIfReady();
+    }
+
+private:
+    Player* GetOwner() const
+    {
+        return ObjectAccessor::GetPlayer(*me, _ownerGUID);
+    }
+
+    // What the owner is fighting: his target first, then whatever is on him.
+    Unit* OwnerTarget() const
+    {
+        Player* owner = GetOwner();
+        if (!owner || !owner->IsInCombat() || !me->IsWithinDist(owner, 40.0f))
+            return nullptr;
+
+        if (Unit* victim = owner->GetVictim())
+            if (me->IsValidAttackTarget(victim))
+                return victim;
+
+        for (Unit* attacker : owner->getAttackers())
+            if (me->IsValidAttackTarget(attacker))
+                return attacker;
+
+        return nullptr;
+    }
+
+    TaskScheduler _scheduler;
+    ObjectGuid _ownerGUID;
+    uint32 _naturesBiteTime;
+};
+
+// Kills by the player himself; hers come through KilledUnit.
+class player_tarindrella_spider_kills : public PlayerScript
+{
+public:
+    player_tarindrella_spider_kills() : PlayerScript("player_tarindrella_spider_kills") { }
+
+    void OnCreatureKill(Player* killer, Creature* killed) override
+    {
+        if (killed->GetEntry() != NPC_WEBWOOD_SPIDER)
+            return;
+
+        if (Creature* tarindrella = FindTarindrellaOf(killer))
+            tarindrella->AI()->DoAction(ACTION_OWNER_KILLED_SPIDER);
+    }
+};
+
 void AddSC_teldrassil()
 {
     RegisterCreatureAI(npc_wisp_flight_path);
@@ -574,4 +827,6 @@ void AddSC_teldrassil()
     RegisterCreatureAI(npc_ilthalaine_huntress);
     new quest_the_balance_of_nature();
     new player_shadowglen_huntresses();
+    RegisterCreatureAI(npc_tarindrella);
+    new player_tarindrella_spider_kills();
 }

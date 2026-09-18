@@ -150,6 +150,7 @@ class TC_GAME_API AuraEffect
         }
         //  visibility & phases
         void HandleModInvisibilityDetect(AuraApplication const* aurApp, uint8 mode, bool apply) const;
+        void HandleDetectAmore(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModInvisibility(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModStealth(AuraApplication const* aurApp, uint8 mode, bool apply) const;
         void HandleModStealthLevel(AuraApplication const* aurApp, uint8 mode, bool apply) const;

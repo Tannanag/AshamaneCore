@@ -24,9 +24,10 @@
 -- (T0 = the reward of 28724):
 --   +0.0  stands up
 --   +1.9  casts 87071 Alchemy (a 10 s cast, self)
---   +5.5  turns to Iverron (5.3926), casts 92570 on the player (removes 92551, which
---         this server never applies -- kept for shape) and 92388 "Curing Ivveron",
---         a 1 s cast that cuts the Alchemy cast short and lands on Iverron at +6.5
+--   +5.5  turns to Iverron (5.3926), casts 92570 on the player (removes his aura
+--         vision 92551, see 2026_09_17_01 -- the green on Iverron goes out for him)
+--         and 92388 "Curing Ivveron", a 1 s cast that cuts the Alchemy cast short
+--         and lands on Iverron at +6.5
 --   +6.8  turns back, talk emote, "Iverron's poison is cured, but it will take some
 --         time for him to recover."
 -- Iverron stays asleep: the swap to the cured pair is on 28727's reward, not here.

@@ -346,9 +346,15 @@ void SmartScript::ProcessAction(SmartScriptHolder& e, Unit* unit, uint32 var0, u
                 {
                     if (IsUnit(*itr))
                     {
-                        (*itr)->PlayDirectSound(e.action.sound.sound, e.action.sound.onlySelf ? (*itr)->ToPlayer() : nullptr);
-                        TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SOUND: target: %s (%s), sound: %u, onlyself: %u",
-                            (*itr)->GetName().c_str(), (*itr)->GetGUID().ToString().c_str(), e.action.sound.sound, e.action.sound.onlySelf);
+                        Player* onlySelf = e.action.sound.onlySelf ? (*itr)->ToPlayer() : nullptr;
+                        if (e.action.sound.distance == 2)
+                            (*itr)->PlayObjectSound(e.action.sound.sound, (*itr)->GetGUID(), onlySelf);
+                        else if (e.action.sound.distance == 1)
+                            (*itr)->PlayDistanceSound(e.action.sound.sound, onlySelf);
+                        else
+                            (*itr)->PlayDirectSound(e.action.sound.sound, onlySelf);
+                        TC_LOG_DEBUG("scripts.ai", "SmartScript::ProcessAction:: SMART_ACTION_SOUND: target: %s (%s), sound: %u, onlyself: %u, distance: %u",
+                            (*itr)->GetName().c_str(), (*itr)->GetGUID().ToString().c_str(), e.action.sound.sound, e.action.sound.onlySelf, e.action.sound.distance);
                     }
                 }
 

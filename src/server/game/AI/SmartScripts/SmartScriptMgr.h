@@ -477,7 +477,7 @@ enum SMART_ACTION
     SMART_ACTION_TALK                               = 1,      // groupID from creature_text, duration to wait before TEXT_OVER event is triggered, useTalkTarget (0/1) - use target as talk target
     SMART_ACTION_SET_FACTION                        = 2,      // FactionId (or 0 for default)
     SMART_ACTION_MORPH_TO_ENTRY_OR_MODEL            = 3,      // Creature_template entry(param1) OR ModelId (param2) (or 0 for both to demorph)
-    SMART_ACTION_SOUND                              = 4,      // SoundId, onlySelf
+    SMART_ACTION_SOUND                              = 4,      // SoundId, onlySelf, distance (0 = SMSG_PLAY_SOUND, 1 = SMSG_PLAY_SPEAKERBOT_SOUND, 2 = SMSG_PLAY_OBJECT_SOUND placed at the unit)
     SMART_ACTION_PLAY_EMOTE                         = 5,      // EmoteId
     SMART_ACTION_FAIL_QUEST                         = 6,      // QuestID
     SMART_ACTION_OFFER_QUEST                        = 7,      // QuestID, directAdd
@@ -657,6 +657,7 @@ struct SmartAction
         {
             uint32 sound;
             uint32 onlySelf;
+            uint32 distance;
         } sound;
 
         struct

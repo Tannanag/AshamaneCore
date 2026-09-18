@@ -3221,6 +3221,23 @@ void WorldObject::PlayDirectSound(uint32 soundId, Player* target /*= nullptr*/)
         SendMessageToSet(WorldPackets::Misc::PlaySound(GetGUID(), soundId).Write(), true);
 }
 
+// SMSG_PLAY_OBJECT_SOUND: a 3D sound the client places at this object's position
+// (retail's ambient creature sounds, e.g. the Ancient Protectors' creaking).
+// PlayDirectSound is SMSG_PLAY_SOUND, which the client does not attenuate.
+void WorldObject::PlayObjectSound(uint32 soundKitId, ObjectGuid targetObjectGuid, Player* target /*= nullptr*/)
+{
+    WorldPackets::Misc::PlayObjectSound pkt;
+    pkt.TargetObjectGUID = targetObjectGuid;
+    pkt.SourceObjectGUID = GetGUID();
+    pkt.SoundKitID = soundKitId;
+    pkt.Position = GetPosition();
+
+    if (target)
+        target->SendDirectMessage(pkt.Write());
+    else
+        SendMessageToSet(pkt.Write(), true);
+}
+
 void WorldObject::PlayDirectMusic(uint32 musicId, Player* target /*= nullptr*/)
 {
     if (target)

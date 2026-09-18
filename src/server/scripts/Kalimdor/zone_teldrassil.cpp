@@ -106,6 +106,184 @@ private:
     }
 };
 
+// The Crested Owls (62242) of Shadowglen and the Dolanaar side keep a perch in the
+// air and circle above it. In the 14 Sep sniff 13 owls do the same three things, 619
+// movement packets between them, and the shape is identical on every one:
+//
+// - Perched, 16-31 s: short flying hops of 0.4-9 yd (median 2.6) at 2.5 yd/s, all on
+//   one altitude and never more than ~6 yd from the perch. Half the hops are cut off
+//   by the next one about 1.2 s in; the rest end and are followed by a pause, mostly
+//   under half a second but up to 10 s.
+// - Take-off: one Flying|CatmullRom|Cyclic|EnterCycle spline, a circle of radius 8
+//   centred on wherever the owl is at that moment, 5 yd higher, 16 points, 12,507 ms
+//   per lap (4.5 yd/s). Its first point is straight ahead of the owl, and the
+//   direction is a coin toss -- the same owl goes both ways. It stays up 32-60 s
+//   (3-5 laps; one 116 s outlier).
+// - Descent: a single 9.43 yd leg at 4.5 yd/s from wherever it is on the circle back
+//   to the exact point it took off from, 2.1 s, and the next hop follows at once.
+//
+// The core no longer honours EnterCycle (MoveSpline::init_spline cycles from the
+// start position), so MoveCirclePath would fold the perch into every lap. The climb
+// is flown as its own leg to the first circle point, and the cyclic spline is
+// launched from there -- the same circle, one packet more than retail. 4.5 yd/s is
+// neither the template's run speed nor the sniffed one (6), so every velocity is set
+// explicitly. The spawns are MovementType 0: a random generator would call
+// StopMoving() under the spline and pick its own altitude.
+struct npc_crested_owl : public NullCreatureAI
+{
+    npc_crested_owl(Creature* creature) : NullCreatureAI(creature) { }
+
+    void JustRespawned() override
+    {
+        StartPerch();
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        switch (_phase)
+        {
+            case OWL_PERCHED:
+                if (_phaseTimer <= diff)
+                    TakeOff();
+                else
+                {
+                    _phaseTimer -= diff;
+                    if (_hopTimer <= diff)
+                        Hop();
+                    else
+                        _hopTimer -= diff;
+                }
+                break;
+            case OWL_CLIMBING:
+                if (me->movespline->Finalized())
+                    Circle();
+                break;
+            case OWL_CIRCLING:
+                if (_phaseTimer <= diff)
+                    Descend();
+                else
+                    _phaseTimer -= diff;
+                break;
+            case OWL_DESCENDING:
+                if (me->movespline->Finalized())
+                    StartPerch();
+                break;
+        }
+    }
+
+private:
+    enum OwlPhase
+    {
+        OWL_PERCHED,
+        OWL_CLIMBING,
+        OWL_CIRCLING,
+        OWL_DESCENDING
+    };
+
+    static constexpr float PERCH_SPEED       = 2.5f;
+    static constexpr float PERCH_RADIUS      = 6.0f;
+    static constexpr float FLIGHT_SPEED      = 4.5f;
+    static constexpr float CIRCLE_RADIUS     = 8.0f;
+    static constexpr float CIRCLE_CLIMB      = 5.0f;
+    static constexpr uint8 CIRCLE_POINTS     = 16;
+
+    void StartPerch()
+    {
+        _phase = OWL_PERCHED;
+        _phaseTimer = urandms(16, 31);
+        _hopTimer = urand(200, 500);
+    }
+
+    // One hop on the perch altitude: 1-5 yd in a random direction from where the owl
+    // is, pulled back in when that would leave the perch.
+    void Hop()
+    {
+        Position const& home = me->GetHomePosition();
+        float angle = frand(0.0f, 2.0f * float(M_PI));
+        float dist = frand(1.0f, 5.0f);
+        Position target(me->GetPositionX() + dist * std::cos(angle), me->GetPositionY() + dist * std::sin(angle), home.GetPositionZ());
+        if (home.GetExactDist2d(&target) > PERCH_RADIUS)
+        {
+            dist = frand(0.0f, PERCH_RADIUS / 2.0f);
+            target.Relocate(home.GetPositionX() + dist * std::cos(angle), home.GetPositionY() + dist * std::sin(angle));
+        }
+
+        Movement::MoveSplineInit init(me);
+        init.MoveTo(target.GetPositionX(), target.GetPositionY(), target.GetPositionZ(), false, true);
+        init.SetFly();
+        init.SetVelocity(PERCH_SPEED);
+        uint32 hopTime = uint32(init.Launch());
+
+        // About half the hops are overridden by the next one after ~1.2 s, a fifth
+        // run out and the next follows at once, the rest end in a pause.
+        uint32 roll = urand(0, 99);
+        if (roll < 55)
+            _hopTimer = urand(800, 1300);
+        else if (roll < 75)
+            _hopTimer = hopTime + urand(0, 500);
+        else
+            _hopTimer = hopTime + urand(1000, 10000);
+    }
+
+    // The circle is centred on the take-off point, its first point straight ahead.
+    void TakeOff()
+    {
+        me->StopMoving();
+        _takeOff.Relocate(me);
+        _clockwise = urand(0, 1) != 0;
+
+        _phase = OWL_CLIMBING;
+        Movement::MoveSplineInit init(me);
+        init.MoveTo(CirclePoint(0).x, CirclePoint(0).y, CirclePoint(0).z, false, true);
+        init.SetFly();
+        init.SetVelocity(FLIGHT_SPEED);
+        init.Launch();
+    }
+
+    void Circle()
+    {
+        _phase = OWL_CIRCLING;
+        _phaseTimer = urandms(32, 60);
+
+        Movement::MoveSplineInit init(me);
+        // MoveSplineInit::Launch overwrites the first point with the current position,
+        // which is the first circle point now that the climb has finalized.
+        for (uint8 i = 0; i < CIRCLE_POINTS; ++i)
+            init.Path().push_back(CirclePoint(i));
+        init.SetFly();
+        init.SetSmooth();
+        init.SetCyclic();
+        init.SetUncompressed();
+        init.SetVelocity(FLIGHT_SPEED);
+        init.Launch();
+    }
+
+    void Descend()
+    {
+        _phase = OWL_DESCENDING;
+        Movement::MoveSplineInit init(me);
+        init.MoveTo(_takeOff.GetPositionX(), _takeOff.GetPositionY(), _takeOff.GetPositionZ(), false, true);
+        init.SetFly();
+        init.SetVelocity(FLIGHT_SPEED);
+        init.Launch();
+    }
+
+    G3D::Vector3 CirclePoint(uint8 index) const
+    {
+        float step = 2.0f * float(M_PI) / CIRCLE_POINTS * (_clockwise ? -1.0f : 1.0f);
+        float angle = _takeOff.GetOrientation() + step * index;
+        return G3D::Vector3(_takeOff.GetPositionX() + CIRCLE_RADIUS * std::cos(angle),
+            _takeOff.GetPositionY() + CIRCLE_RADIUS * std::sin(angle),
+            _takeOff.GetPositionZ() + CIRCLE_CLIMB);
+    }
+
+    OwlPhase _phase = OWL_PERCHED;
+    uint32 _phaseTimer = 0;
+    uint32 _hopTimer = 0;
+    Position _takeOff;
+    bool _clockwise = false;
+};
+
 // Moriana Dawnlight (34756) and Doranel Amberleaf (34757) stand together at the top
 // of Aldrassil and, when a player steps between them, Amberleaf voices her doubts
 // about Fandral, Dawnlight hushes her, and both turn to look at the player before
@@ -1029,6 +1207,7 @@ public:
 void AddSC_teldrassil()
 {
     RegisterCreatureAI(npc_wisp_flight_path);
+    RegisterCreatureAI(npc_crested_owl);
     RegisterCreatureAI(npc_moriana_dawnlight);
     new at_aldrassil_dawnlight_amberleaf();
     RegisterCreatureAI(npc_ilthalaine);

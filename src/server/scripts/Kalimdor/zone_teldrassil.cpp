@@ -25,6 +25,8 @@
 #include "PassiveAI.h"
 #include "Player.h"
 #include "ScriptedCreature.h"
+#include "SpellHistory.h"
+#include "SpellMgr.h"
 #include "TaskScheduler.h"
 #include "TemporarySummon.h"
 #include "WaypointManager.h"
@@ -818,6 +820,212 @@ public:
     }
 };
 
+// The Shade of the Kaldorei (34574) at the Shadowglen moonwell, for the player alone.
+//
+// Retail: stepping into areatrigger 5466 (r 11.96 around the moonwell) has the
+// Moonwell Bunny 34575 cast 65657 "Forcecast Summon Shade of the Kaldorei" at the
+// player, who casts 65656 himself; the Shade comes up on spell_target_position
+// (10711.6, 758.853), CreatedBy = the player, with SummonProperties 492 -- flags 16,
+// PERSONAL_SPAWN, the row Salanar the Horseman, the Bridenbrad naaru, Zuni,
+// Swiftclaw and Mekkatorque's Sanctum image share -- so every player gets his own
+// Shade and sees only that one. The core does the same with the player as
+// original caster of 65656: EffectSummonType's ALLY branch summons with him as
+// summoner and personalSpawn set, at his faction (FactionTemplate 4 in the sniff,
+// the night elf player faction). From the 14 Sep sniff, T0 = the player's 65656:
+//   +0.1   "%s fades into existence as you approach, nodding a subtle greeting."
+//   +2.5   "Much has changed for our people since the Battle of Mount Hyjal."
+//   +4.8   walks to 10703.10, 761.48 (5.2 s; every leg runs at 1.85-1.89 yd/s
+//          though the create block says WalkSpeed 2.5)
+//   +11.4  "Nordrassil lies a pale shadow of what it once was..."
+//   +13.3  walks to 10704.73, 768.90; at +15.7, still on the way, re-aimed at
+//          10706.64, 768.71 and there at +18.4
+//   +18.5  faces 5.2185 (the player's side of the well)
+//   +20.2  emote 5 (OneShotExclamation), "Our immortality... was lost."
+//   +26.8  "The Betrayer was freed from his prison..."
+//   +29.0  walks to 10713.24, 761.84 (5.6 s)
+//   +34.7  faces 2.7751
+//   +36.8  emote 1 (OneShotTalk), "A dark time for all."
+//   +40.9  "The Shade of the Kaldorei closes its eyes and fades away."
+//   +43.2  destroyed, and the player gets SMSG_COOLDOWN_EVENT 65656.
+// Only the third and fifth lines carry an emote (creature_text.Emote).
+//
+// That cooldown event is the lockout: 65656 has SPELL_ATTR0_DISABLED_WHILE_ACTIVE
+// and a 2 min RecoveryTime, so the cooldown is on hold while the Shade is up and
+// runs 2 min from the fade -- the same player can not raise a second one by
+// walking out and in, and other players are not affected. The core does that only
+// for minions (Unit::SetMinion), and this summon is a plain TempSummon, so the AI
+// holds and releases the cooldown itself; the areatrigger script checks it before
+// the bunny casts. An on-hold cooldown is not saved, so a logout mid-scene does not
+// lock the player out for good.
+enum ShadeOfTheKaldoreiData
+{
+    NPC_MOONWELL_BUNNY                      = 34575,
+
+    SPELL_FORCECAST_SUMMON_SHADE            = 65657,
+    SPELL_SUMMON_SHADE_OF_THE_KALDOREI      = 65656,
+
+    EMOTE_SHADE_FADES_IN                    = 0,
+    SAY_SHADE_MUCH_HAS_CHANGED              = 1,
+    SAY_SHADE_NORDRASSIL                    = 2,
+    SAY_SHADE_IMMORTALITY_LOST              = 3,
+    SAY_SHADE_THE_BETRAYER                  = 4,
+    SAY_SHADE_A_DARK_TIME                   = 5,
+    EMOTE_SHADE_FADES_AWAY                  = 6
+};
+
+G3D::Vector3 const ShadeWalkWest      = { 10703.10f, 761.48f, 1322.99f };
+G3D::Vector3 const ShadeWalkNorth     = { 10704.73f, 768.90f, 1322.84f };
+G3D::Vector3 const ShadeWalkNorthEast = { 10706.64f, 768.71f, 1322.94f };
+G3D::Vector3 const ShadeWalkEast      = { 10713.24f, 761.84f, 1321.73f };
+float const ShadeFacingFromNorth      = 5.2185f;
+float const ShadeFacingFromEast       = 2.7751f;
+float const ShadeWalkSpeed            = 1.86f;
+
+struct npc_shade_of_the_kaldorei : public NullCreatureAI
+{
+    npc_shade_of_the_kaldorei(Creature* creature) : NullCreatureAI(creature) { }
+
+    void IsSummonedBy(Unit* summoner) override
+    {
+        Player* player = summoner->ToPlayer();
+        if (!player)
+        {
+            me->DespawnOrUnsummon();
+            return;
+        }
+
+        _playerGUID = player->GetGUID();
+        player->GetSpellHistory()->StartCooldown(sSpellMgr->AssertSpellInfo(SPELL_SUMMON_SHADE_OF_THE_KALDOREI), 0, nullptr, true);
+
+        _scheduler.Schedule(Milliseconds(100), [this](TaskContext /*task*/)
+        {
+            Talk(EMOTE_SHADE_FADES_IN, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(2500), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_SHADE_MUCH_HAS_CHANGED, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(4800), [this](TaskContext /*task*/)
+        {
+            WalkTo(ShadeWalkWest);
+        });
+
+        _scheduler.Schedule(Milliseconds(11400), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_SHADE_NORDRASSIL, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(13300), [this](TaskContext /*task*/)
+        {
+            WalkTo(ShadeWalkNorth);
+        });
+
+        _scheduler.Schedule(Milliseconds(15700), [this](TaskContext /*task*/)
+        {
+            WalkTo(ShadeWalkNorthEast);
+        });
+
+        _scheduler.Schedule(Milliseconds(18600), [this](TaskContext /*task*/)
+        {
+            me->SetFacingTo(ShadeFacingFromNorth);
+        });
+
+        _scheduler.Schedule(Milliseconds(20200), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_SHADE_IMMORTALITY_LOST, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(26800), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_SHADE_THE_BETRAYER, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(29000), [this](TaskContext /*task*/)
+        {
+            WalkTo(ShadeWalkEast);
+        });
+
+        _scheduler.Schedule(Milliseconds(34700), [this](TaskContext /*task*/)
+        {
+            me->SetFacingTo(ShadeFacingFromEast);
+        });
+
+        _scheduler.Schedule(Milliseconds(36800), [this](TaskContext /*task*/)
+        {
+            Talk(SAY_SHADE_A_DARK_TIME, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(40900), [this](TaskContext /*task*/)
+        {
+            Talk(EMOTE_SHADE_FADES_AWAY, GetPlayer());
+        });
+
+        _scheduler.Schedule(Milliseconds(43200), [this](TaskContext /*task*/)
+        {
+            // Releases the on-hold cooldown into the real 2 min one. A player who
+            // has logged out lost the hold with his session.
+            if (Player* player = GetPlayer())
+                player->GetSpellHistory()->SendCooldownEvent(sSpellMgr->AssertSpellInfo(SPELL_SUMMON_SHADE_OF_THE_KALDOREI));
+            me->DespawnOrUnsummon();
+        });
+    }
+
+    void UpdateAI(uint32 diff) override
+    {
+        _scheduler.Update(diff);
+    }
+
+private:
+    Player* GetPlayer() const
+    {
+        return ObjectAccessor::GetPlayer(*me, _playerGUID);
+    }
+
+    // The sniffed legs all run at ~1.86 yd/s with the walk animation, not at the
+    // template's walk speed; the velocity is set so the lines land where they did.
+    void WalkTo(G3D::Vector3 const& point) const
+    {
+        Movement::MoveSplineInit init(me);
+        init.MoveTo(point);
+        init.SetWalk(true);
+        init.SetVelocity(ShadeWalkSpeed);
+        init.Launch();
+    }
+
+    TaskScheduler _scheduler;
+    ObjectGuid _playerGUID;
+};
+
+// Areatrigger 5466, the moonwell.
+class at_shadowglen_moonwell : public AreaTriggerScript
+{
+public:
+    at_shadowglen_moonwell() : AreaTriggerScript("at_shadowglen_moonwell") { }
+
+    bool OnTrigger(Player* player, AreaTriggerEntry const* /*trigger*/, bool entered) override
+    {
+        // The client reports the leave too; retail answers only the entry.
+        if (!entered || !player->IsAlive())
+            return false;
+
+        // On hold while his Shade is up, 2 min from its fade.
+        if (player->GetSpellHistory()->HasCooldown(SPELL_SUMMON_SHADE_OF_THE_KALDOREI))
+            return false;
+
+        // The bunny stands at the well's centre, 2 yd from the trigger.
+        Creature* bunny = player->FindNearestCreature(NPC_MOONWELL_BUNNY, 30.0f);
+        if (!bunny)
+            return false;
+
+        // A real cast, as in the sniff (SMSG_SPELL_START and SMSG_SPELL_GO from the
+        // bunny); the forced 65656 on the player is what summons the Shade.
+        bunny->CastSpell(player, SPELL_FORCECAST_SUMMON_SHADE, false);
+        return true;
+    }
+};
+
 void AddSC_teldrassil()
 {
     RegisterCreatureAI(npc_wisp_flight_path);
@@ -829,4 +1037,6 @@ void AddSC_teldrassil()
     new player_shadowglen_huntresses();
     RegisterCreatureAI(npc_tarindrella);
     new player_tarindrella_spider_kills();
+    RegisterCreatureAI(npc_shade_of_the_kaldorei);
+    new at_shadowglen_moonwell();
 }
